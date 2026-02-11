@@ -1,5 +1,7 @@
 #pragma kernel ClearGrid
 #pragma kernel P2G
+#pragma kernel WeightToTexture
+#pragma kernel AddGravity
 #pragma kernel Normalize
 #pragma kernel Divergence
 #pragma kernel PressureSolve
@@ -15,6 +17,8 @@ struct Particle {
 
 RWStructuredBuffer<Particle> _Particles;
 RWStructuredBuffer<int> _WeightBuffer;
+RWStructuredBuffer<int> _VelXBuffer;
+RWStructuredBuffer<int> _VelYBuffer;
 
 RWTexture2D<float2> _Velocity;
 RWTexture2D<float2> _VelocityOld;
@@ -36,66 +40,94 @@ void ClearGrid(uint3 id:SV_DispatchThreadID)
     _Weight[id.xy] = 0;
 }
 
-[numthreads(64,1,1)]
-void P2G(uint3 id:SV_DispatchThreadID)
+[numthreads(64, 1, 1)]
+void P2G(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)particleCount) return;
     Particle p = _Particles[id.x];
     
-    float2 gridPos = p.position * RESOLUTION;
-    int2 base = floor(gridPos);
-    float2 f = gridPos - base;
+    // 0.0 ~ 1.0 の座標を 0 ~ RESOLUTION に変換
+    float gx = p.position.x * (float)RESOLUTION - 0.5f;
+    float gy = p.position.y * (float)RESOLUTION - 0.5f;
 
-    for(int j=0; j<2; j++)
-    for(int i=0; i<2; i++)
+    int bx = (int)floor(gx);
+    int by = (int)floor(gy);
+
+    float fx = gx - (float)bx;
+    float fy = gy - (float)by;
+
+    for (int j = 0; j <= 1; j++)
     {
-        int2 cell = clamp(base + int2(i,j), 0, RESOLUTION-1);
-        float w = ((i==0)?1-f.x:f.x)*((j==0)?1-f.y:f.y);
-        
-        // 浮動小数を1000倍して整数として加算（競合を回避し、全粒子を数え上げる）
-        InterlockedAdd(_WeightBuffer[cell.y * RESOLUTION + cell.x], (int)(w * 1000.0f));
+        for (int i = 0; i <= 1; i++)
+        {
+            int cx = bx + i;
+            int cy = by + j;
+
+            // 境界チェック
+            if (cx >= 0 && cx < RESOLUTION && cy >= 0 && cy < RESOLUTION)
+            {
+                // インデックス計算を2次元に
+                int index = cy * RESOLUTION + cx;
+                float w = ((i == 0) ? (1.0f - fx) : fx) * ((j == 0) ? (1.0f - fy) : fy);
+                float2 momentum = p.velocity * w;
+                InterlockedAdd(_VelXBuffer[index], (int)(momentum.x * 1000.0f));
+                InterlockedAdd(_VelYBuffer[index], (int)(momentum.y * 1000.0f));
+                InterlockedAdd(_WeightBuffer[index], (int)(w * 1000.0f));
+            }
+        }
     }
+}
+
+[numthreads(8,8,1)]
+void WeightToTexture(uint3 id:SV_DispatchThreadID)
+{
+    int idx = id.y * RESOLUTION + id.x;
+    _Weight[id.xy] = (float)_WeightBuffer[idx] / 1000.0f;
+}
+
+[numthreads(8,8,1)]
+void AddGravity(uint3 id : SV_DispatchThreadID)
+{
+    int2 p = id.xy;
+
+    float2 v = _Velocity[p];
+    v.y -= gravity*dt;
+    _Velocity[p] = v;
+
 }
 
 [numthreads(8,8,1)]
 void Normalize(uint3 id:SV_DispatchThreadID)
 {
     float w = _Weight[id.xy];
+    int idx = id.y * RESOLUTION + id.x;
     if (w > 1e-6)
-        _Velocity[id.xy] /= w;
+    {
+        float vx = (float)_VelXBuffer[idx] / 1000.0f;
+        float vy = (float)_VelYBuffer[idx] / 1000.0f;
+        _Velocity[id.xy] = float2(vx, vy) / w;
+    }
 
     _VelocityOld[id.xy] = _Velocity[id.xy];
 }
 
 [numthreads(8,8,1)]
-void Divergence(uint3 id:SV_DispatchThreadID)
+void Divergence(uint3 id : SV_DispatchThreadID)
 {
-    int idx = id.y * RESOLUTION + id.x;
     int2 p = id.xy;
+    // 境界チェック
     if (p.x <= 0 || p.y <= 0 || p.x >= RESOLUTION - 1 || p.y >= RESOLUTION - 1)
     {
         _Divergence[p] = 0;
         return;
     }
 
-    // 速度の湧き出し量（従来の計算）
+    // 速度の湧き出し
     float2 L = _Velocity[p + int2(-1, 0)];
     float2 R = _Velocity[p + int2(1, 0)];
     float2 B = _Velocity[p + int2(0, -1)];
     float2 T = _Velocity[p + int2(0, 1)];
-    float div = (R.x - L.x + T.y - B.y) * 0.5 / dx;
-
-    // --- 【重要】密度の補正項を追加 ---
-    // 目標とする密度（1.0）に対して、現在のWeightがどれだけ過剰か（または不足か）を計算します
-    float density = _Weight[p];
-    float targetDensity = 1.0; 
-    float pressureCompression = 0.1; // 圧縮率の調整（ここを上げると反発が強くなる）
-    
-    // 密度が高い（粒子が重なっている）ほど、divを大きくして反発圧力を生むようにします
-    if (density > targetDensity)
-    {
-        div -= (density - targetDensity) * (pressureCompression / dt);
-    }
+    float div = (R.x - L.x)/dx + (T.y - B.y) * 0.5 / dx;
 
     _Divergence[p] = div;
 }
@@ -106,9 +138,7 @@ void PressureSolve(uint3 id:SV_DispatchThreadID)
     int2 p = id.xy;
     if (p.x < 1 || p.y < 1 || p.x >= RESOLUTION - 1 || p.y >= RESOLUTION - 1) return;
 
-    // 重要：水が全く存在しないグリッド（空気）は圧力を 0 に固定する
-    // これにより、水面が形成され、内部にだけ圧力が溜まるようになります
-    if (_Weight[p] <= 0.001)
+    if (_Weight[p] <= 0.0)
     {
         _PressureTemp[p] = 0;
         return;
@@ -119,9 +149,10 @@ void PressureSolve(uint3 id:SV_DispatchThreadID)
     float B = _Pressure[p + int2(0, -1)];
     float T = _Pressure[p + int2(0, 1)];
     float div = _Divergence[p];
+    div *= 1.0 / dt;
 
-    // 水がある場所の圧力を更新
     _PressureTemp[p] = (L + R + B + T - div * dx * dx) * 0.25;
+    
 }
 
 [numthreads(8,8,1)]
@@ -137,7 +168,7 @@ void Project(uint3 id:SV_DispatchThreadID)
     float T=_Pressure[p+int2(0,1)];
 
     float2 grad=float2(R-L,T-B)*0.5/dx;
-    _Velocity[p]-=grad;
+    _Velocity[p]-=grad * dt;
 }
 
 float2 SampleVelocity(float2 uv)
@@ -179,38 +210,15 @@ void G2P(uint3 id:SV_DispatchThreadID)
 
     Particle p = _Particles[id.x];
 
-    // --- 1. グリッドからの速度更新（現状はここが弱い） ---
+    //グリッドからの速度更新
     float2 vNew = SampleVelocity(p.position);
     float2 vOld = SampleVelocityOld(p.position);
     p.velocity = lerp(vNew, p.velocity + (vNew - vOld), flipRatio);
-
-    // --- 2. 根本的修正：近接粒子との反発（SPH的な押し出し） ---
-    // グリッド計算が壊れていても、これで「体積」を強制します
-    float radius = 0.015; // 粒子の影響半径
-    float pushStrength = 0.5; // 押し出す強さ
     
-    /*
-    // 全粒子を回すと重いので、自分の周りのインデックスのみチェック（簡易版）
-    // 本来はグリッドで近傍探索しますが、まずは体積が出るか確認するためです
-    for (uint i = 1; i < 32; i++) 
-    {
-        uint neighborId = (id.x + i) % (uint)particleCount;
-        float2 relPos = p.position - _Particles[neighborId].position;
-        float dist = length(relPos);
-        
-        if (dist > 0 && dist < radius) 
-        {
-            float force = (radius - dist) / radius;
-            p.velocity += (relPos / dist) * force * pushStrength;
-        }
-    }
-    */
-
-    // --- 3. 重力と位置更新 ---
-    p.velocity.y -= gravity * dt;
+    //位置更新
     p.position += p.velocity * dt;
 
-    // --- 4. 境界判定（底に厚みを持たせる） ---
+    //境界判定
     float m = 0.02;
     if(p.position.x < m){ p.position.x = m; p.velocity.x *= -0.2; }
     if(p.position.x > 1-m){ p.position.x = 1-m; p.velocity.x *= -0.2; }

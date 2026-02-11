@@ -14,7 +14,7 @@ public class FLIP2DManager : MonoBehaviour
         public Vector2 velocity;
     }
 
-    ComputeBuffer particleBuffer, weightBuffer;
+    ComputeBuffer particleBuffer, weightBuffer, velXBuffer, velYBuffer;
 
     RenderTexture velocity, velocityOld;
     RenderTexture weight;
@@ -26,12 +26,14 @@ public class FLIP2DManager : MonoBehaviour
         // 16バイト (float2 pos + float2 vel = 4byte * 4) を明示
         particleBuffer = new ComputeBuffer(PARTICLES, sizeof(float) * 4); 
         weightBuffer = new ComputeBuffer(RES * RES, sizeof(int));
+        velXBuffer = new ComputeBuffer(RES * RES, sizeof(int));
+        velYBuffer = new ComputeBuffer(RES * RES, sizeof(int));
 
         Particle[] p = new Particle[PARTICLES];
         for (int i = 0; i < PARTICLES; i++)
         {
             // 0~1の範囲でランダムに。少し散らして固まらないようにします
-            p[i].position = new Vector2(Random.value, Random.value);
+            p[i].position = new Vector2(Random.value*0.1f+0.45f, Random.value*0.1f+0.45f);
             p[i].velocity = Vector2.zero;
         }
         particleBuffer.SetData(p);
@@ -56,7 +58,7 @@ public class FLIP2DManager : MonoBehaviour
 
     void Update()
     {
-
+        weightBuffer.SetData(new int[RES * RES]);
         int threadGroups = Mathf.CeilToInt((float)PARTICLES / 64f);
         int gridGroups = Mathf.CeilToInt((float)RES / 8f);
 
@@ -64,34 +66,57 @@ public class FLIP2DManager : MonoBehaviour
         compute.SetFloat("dt", 0.01f);
         compute.SetFloat("dx", 1f / RES);
         compute.SetFloat("gravity", 9.8f);
-        compute.SetFloat("flipRatio", 0.95f);
+        compute.SetFloat("flipRatio", 0.1f);
 
-        int kCla = 0;
+        //Clear
+        int kCla = compute.FindKernel("ClearGrid");
         compute.SetBuffer(kCla, "_Particles", particleBuffer);
         compute.SetTexture(kCla, "_Velocity", velocity);
         compute.SetTexture(kCla, "_Velocity", velocity);
         compute.SetTexture(kCla, "_Weight", weight);
         compute.Dispatch(kCla, gridGroups, gridGroups, 1);
 
-        int kP2G = 1;
+        //Particle to Grid
+        int kP2G = compute.FindKernel("P2G");
         compute.SetBuffer(kP2G, "_Particles", particleBuffer);
         compute.SetTexture(kP2G, "_Velocity", velocity);
         compute.SetTexture(kP2G, "_Weight", weight);
+        compute.SetBuffer(kP2G, "_VelXBuffer", velXBuffer);
+        compute.SetBuffer(kP2G, "_VelYBuffer", velYBuffer);
+        compute.SetBuffer(kP2G, "_WeightBuffer", weightBuffer);
         compute.Dispatch(kP2G, threadGroups, 1, 1);
 
-        int kNorm = 2;
+        //Weight to Texture
+        int kW2Tex = compute.FindKernel("WeightToTexture");
+        compute.SetTexture(kW2Tex, "_Weight", weight);
+        compute.SetBuffer(kW2Tex, "_WeightBuffer", weightBuffer);
+        compute.Dispatch(kW2Tex, RES / 8, RES / 8, 1);
+
+        //Normalize
+        int kNorm = compute.FindKernel("Normalize");
         compute.SetTexture(kNorm, "_Velocity", velocity);
         compute.SetTexture(kNorm, "_VelocityOld", velocityOld);
         compute.SetTexture(kNorm, "_Weight", weight);
+        compute.SetBuffer(kNorm, "_VelXBuffer", velXBuffer);
+        compute.SetBuffer(kNorm, "_VelYBuffer", velYBuffer);
         compute.Dispatch(kNorm, RES / 8, RES / 8, 1);
 
-        int kDiv = 3;
+        // Add gravity
+        int kGrav = compute.FindKernel("AddGravity");
+        compute.SetTexture(kGrav, "_Velocity", velocity);
+        compute.SetTexture(kGrav, "_Weight", weight);
+        compute.Dispatch(kGrav, RES / 8, RES / 8, 1);
+
+        //Divergence
+        int kDiv = compute.FindKernel("Divergence");
         compute.SetTexture(kDiv, "_Velocity", velocity);
         compute.SetTexture(kDiv, "_Weight", weight);
+        compute.SetBuffer(kDiv, "_WeightBuffer", weightBuffer);
         compute.SetTexture(kDiv, "_Divergence", divergence);
         compute.Dispatch(kDiv, RES / 8, RES / 8, 1);
 
-        int kPres = 4;
+        //Pressure Solve
+        int kPres = compute.FindKernel("PressureSolve");
         for (int i = 0; i < 40; i++)
         {
             compute.SetTexture(kPres, "_Pressure", pressure);
@@ -103,14 +128,18 @@ public class FLIP2DManager : MonoBehaviour
             Swap(ref pressure, ref pressureTemp);
         }
 
-        compute.SetTexture(5, "_Pressure", pressure);
-        compute.SetTexture(5, "_Velocity", velocity);
-        compute.Dispatch(5, RES / 8, RES / 8, 1);
+        //Project Velocity
+        int kProj = compute.FindKernel("Project");
+        compute.SetTexture(kProj, "_Pressure", pressure);
+        compute.SetTexture(kProj, "_Velocity", velocity);
+        compute.Dispatch(kProj, RES / 8, RES / 8, 1);
 
-        compute.SetBuffer(6, "_Particles", particleBuffer);
-        compute.SetTexture(6, "_Velocity", velocity);
-        compute.SetTexture(6, "_VelocityOld", velocityOld);
-        compute.Dispatch(6, threadGroups, 1, 1);
+        //Grid to Particle
+        int kG2P = compute.FindKernel("G2P");
+        compute.SetBuffer(kG2P, "_Particles", particleBuffer);
+        compute.SetTexture(kG2P, "_Velocity", velocity);
+        compute.SetTexture(kG2P, "_VelocityOld", velocityOld);
+        compute.Dispatch(kG2P, threadGroups, 1, 1);
 
         Graphics.Blit(velocity, velocityOld);
     }
