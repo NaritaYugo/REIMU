@@ -1,15 +1,44 @@
+//====================================================================
 #pragma kernel ClearGrid
+#pragma kernel MarkCellTypes
 #pragma kernel P2G
-#pragma kernel WeightToTexture
+#pragma kernel NormalizeVelX
+#pragma kernel NormalizeVelY
 #pragma kernel AddGravity
-#pragma kernel Normalize
+#pragma kernel ApplyBoundCond
 #pragma kernel Divergence
-#pragma kernel PressureSolve
-#pragma kernel Project
+#pragma kernel BuildDiag
+#pragma kernel ApplyA
+#pragma kernel DotProduct
+#pragma kernel UpdatePR
+#pragma kernel UpdateD
+#pragma kernel Projection
 #pragma kernel G2P
+#pragma kernel Advection
+#pragma kernel DotProductGeneric
+#pragma kernel InitCG
 
-#define RESOLUTION 256
+#define SCALE 10000.0f 
+#define DOT_SCALE 1000000.0f
 
+//====================================================================
+int particleCount;
+float dt;
+float width;
+float height;
+float h;
+uint nx;
+uint ny;
+
+float rho;
+float gravity;
+float flipRatio;
+int maxIter; // floatからintへ
+float tolerance;
+float _Alpha;
+float _Beta;
+
+//====================================================================
 struct Particle {
     float2 position;
     float2 velocity;
@@ -19,211 +48,369 @@ RWStructuredBuffer<Particle> _Particles;
 RWStructuredBuffer<int> _WeightBuffer;
 RWStructuredBuffer<int> _VelXBuffer;
 RWStructuredBuffer<int> _VelYBuffer;
+RWTexture2D<int> _GridType;
+RWTexture2D<float> _VelX;
+RWTexture2D<float> _VelY;
+RWTexture2D<float> _VelXOld;
+RWTexture2D<float> _VelYOld;
+RWTexture2D<float> _Pressure;
+RWTexture2D<float> _Divergence;
+RWTexture2D<float> _Residual;
+RWTexture2D<float> _SearchDir;
+RWTexture2D<float> _Ap;
+RWTexture2D<float> _Precon; // 【修正】ここにセミコロンが抜けていました
+RWStructuredBuffer<int> _DotResult;
+Texture2D<float> _TexA;
+Texture2D<float> _TexB;
 
-RWTexture2D<float2> _Velocity;
-RWTexture2D<float2> _VelocityOld;
-RWTexture2D<float>  _Weight;
-RWTexture2D<float>  _Pressure;
-RWTexture2D<float>  _PressureTemp;
-RWTexture2D<float>  _Divergence;
+float2 SampleVelocity(float2 pos, RWTexture2D<float> vX, RWTexture2D<float> vY) {
+    float2 u_pos = pos / h - float2(0.0, 0.5);
+    int2 u_idx = (int2)floor(u_pos);
+    u_idx.x = clamp(u_idx.x, 0, (int)nx - 1);
+    u_idx.y = clamp(u_idx.y, 0, (int)ny - 2);
+    float2 u_f = frac(u_pos);
+    float u = lerp(lerp(vX[u_idx + int2(0,0)], vX[u_idx + int2(1,0)], u_f.x),
+                   lerp(vX[u_idx + int2(0,1)], vX[u_idx + int2(1,1)], u_f.x), u_f.y);
 
-int particleCount;
-float dt;
-float dx;
-float gravity;
-float flipRatio;
+    float2 v_pos = pos / h - float2(0.5, 0.0);
+    int2 v_idx = (int2)floor(v_pos);
+    v_idx.x = clamp(v_idx.x, 0, (int)nx - 1);
+    v_idx.y = clamp(v_idx.y, 0, (int)ny - 2);
+    float2 v_f = frac(v_pos);
+    float v = lerp(lerp(vY[v_idx + int2(0,0)], vY[v_idx + int2(1,0)], v_f.x),
+                   lerp(vY[v_idx + int2(0,1)], vY[v_idx + int2(1,1)], v_f.x), v_f.y);
+
+    return float2(u, v);
+}
+//====================================================================
+[numthreads(8,8,1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < nx && id.y < ny)
+    {
+        uint centerIdx = id.x + id.y * nx;
+        _WeightBuffer[centerIdx] = 0;
+        _Divergence[id.xy] = 0;
+        _Pressure[id.xy] = 0;
+    }
+
+    if (id.x <= nx && id.y < ny)
+    {
+        uint uIdx = id.x + id.y * (nx + 1);
+        _VelXBuffer[uIdx] = 0;
+    }
+
+    if (id.x < nx && id.y <= ny)
+    {
+        uint vIdx = id.x + id.y * nx;
+        _VelYBuffer[vIdx] = 0;
+    }
+}
 
 [numthreads(8,8,1)]
-void ClearGrid(uint3 id:SV_DispatchThreadID)
+void MarkCellTypes(uint3 id : SV_DispatchThreadID)
 {
-    _Velocity[id.xy] = float2(0,0);
-    _Weight[id.xy] = 0;
+    if (id.x >= nx || id.y >= ny) return;
+    float isEdge = 1.0 - (step(1, id.x) * step(id.x, nx - 2) * step(1, id.y) * step(id.y, ny - 2));
+    _GridType[id.xy] = (int)(isEdge * 2.0); 
 }
 
 [numthreads(64, 1, 1)]
 void P2G(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)particleCount) return;
+
     Particle p = _Particles[id.x];
-    
-    // 0.0 ~ 1.0 の座標を 0 ~ RESOLUTION に変換
-    float gx = p.position.x * (float)RESOLUTION - 0.5f;
-    float gy = p.position.y * (float)RESOLUTION - 0.5f;
+    float2 pos = p.position;
+    float2 vel = p.velocity;
 
-    int bx = (int)floor(gx);
-    int by = (int)floor(gy);
+    // ===============================
+    // VelX (u-grid)
+    // ===============================
+    float2 u_pos = pos / h - float2(0.0, 0.5);
+    int2 u_idx = (int2)floor(u_pos);
+    float2 u_f = frac(u_pos);
 
-    float fx = gx - (float)bx;
-    float fy = gy - (float)by;
+    float w_u[4] = {
+        (1-u_f.x)*(1-u_f.y),
+        u_f.x*(1-u_f.y),
+        (1-u_f.x)*u_f.y,
+        u_f.x*u_f.y
+    };
 
-    for (int j = 0; j <= 1; j++)
+    int2 offsets[4] = {
+        int2(0,0), int2(1,0),
+        int2(0,1), int2(1,1)
+    };
+
+    for(int i = 0; i < 4; i++)
     {
-        for (int i = 0; i <= 1; i++)
-        {
-            int cx = bx + i;
-            int cy = by + j;
+        int2 coord = u_idx + offsets[i];
 
-            // 境界チェック
-            if (cx >= 0 && cx < RESOLUTION && cy >= 0 && cy < RESOLUTION)
-            {
-                // インデックス計算を2次元に
-                int index = cy * RESOLUTION + cx;
-                float w = ((i == 0) ? (1.0f - fx) : fx) * ((j == 0) ? (1.0f - fy) : fy);
-                float2 momentum = p.velocity * w;
-                InterlockedAdd(_VelXBuffer[index], (int)(momentum.x * 1000.0f));
-                InterlockedAdd(_VelYBuffer[index], (int)(momentum.y * 1000.0f));
-                InterlockedAdd(_WeightBuffer[index], (int)(w * 1000.0f));
-            }
+        if(coord.x >= 0 && coord.x <= (int)nx &&
+           coord.y >= 0 && coord.y <  (int)ny)
+        {
+            int uIndex = coord.x + coord.y * (nx + 1);
+
+            // 速度
+            InterlockedAdd(_VelXBuffer[uIndex],
+                (int)(vel.x * w_u[i] * SCALE));
+
+            // ★ Weightも同じセル中心に分配
+            int2 c = int2(
+                clamp(coord.x, 0, (int)nx-1),
+                clamp(coord.y, 0, (int)ny-1)
+            );
+
+            int cIndex = c.x + c.y * nx;
+            InterlockedAdd(_WeightBuffer[cIndex],
+                (int)(w_u[i] * SCALE));
         }
     }
+
+    // ===============================
+    // VelY (v-grid)
+    // ===============================
+    float2 v_pos = pos / h - float2(0.5, 0.0);
+    int2 v_idx = (int2)floor(v_pos);
+    float2 v_f = frac(v_pos);
+
+    float w_v[4] = {
+        (1-v_f.x)*(1-v_f.y),
+        v_f.x*(1-v_f.y),
+        (1-v_f.x)*v_f.y,
+        v_f.x*v_f.y
+    };
+
+    for(int j = 0; j < 4; j++)
+    {
+        int2 coord = v_idx + offsets[j];
+
+        if(coord.x >= 0 && coord.x <  (int)nx &&
+           coord.y >= 0 && coord.y <= (int)ny)
+        {
+            int vIndex = coord.x + coord.y * nx;
+
+            // 速度
+            InterlockedAdd(_VelYBuffer[vIndex],
+                (int)(vel.y * w_v[j] * SCALE));
+
+            // ★ Weightも分配
+            int2 c = int2(
+                clamp(coord.x, 0, (int)nx-1),
+                clamp(coord.y, 0, (int)ny-1)
+            );
+
+            int cIndex = c.x + c.y * nx;
+            InterlockedAdd(_WeightBuffer[cIndex],
+                (int)(w_v[j] * SCALE));
+        }
+    }
+
+    // GridTypeはFluidセルにするだけ
+    int2 center = (int2)floor(pos / h);
+    if(center.x >= 0 && center.x < (int)nx &&
+       center.y >= 0 && center.y < (int)ny)
+    {
+        _GridType[center] = 1;
+    }
 }
 
-[numthreads(8,8,1)]
-void WeightToTexture(uint3 id:SV_DispatchThreadID)
+
+[numthreads(8, 8, 1)]
+void NormalizeVelX(uint3 id : SV_DispatchThreadID)
 {
-    int idx = id.y * RESOLUTION + id.x;
-    _Weight[id.xy] = (float)_WeightBuffer[idx] / 1000.0f;
+    if (id.x > nx || id.y >= ny) return;
+    float sumVel = (float)_VelXBuffer[id.x + id.y * (nx + 1)] / SCALE;
+    float w = 0;
+    if (id.x < nx) w += (float)_WeightBuffer[id.x + id.y * nx] / SCALE;
+    if (id.x > 0)  w += (float)_WeightBuffer[(id.x - 1) + id.y * nx] / SCALE;
+    _VelX[id.xy] = (w > 0.0001f) ? (sumVel / w) : 0.0f;
 }
 
-[numthreads(8,8,1)]
+[numthreads(8, 8, 1)]
+void NormalizeVelY(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y > ny) return;
+    float sumVel = (float)_VelYBuffer[id.x + id.y * nx] / SCALE;
+    float w = 0;
+    if (id.y < ny) w += (float)_WeightBuffer[id.x + id.y * nx] / SCALE;
+    if (id.y > 0)  w += (float)_WeightBuffer[id.x + (id.y - 1) * nx] / SCALE;
+    _VelY[id.xy] = (w > 0.0001f) ? (sumVel / w) : 0.0f;
+}
+
+[numthreads(8, 8, 1)]
 void AddGravity(uint3 id : SV_DispatchThreadID)
 {
-    int2 p = id.xy;
-
-    float2 v = _Velocity[p];
-    v.y -= gravity*dt;
-    _Velocity[p] = v;
-
+    if (id.x < nx && id.y <= ny) _VelY[id.xy] += gravity * dt;
 }
 
-[numthreads(8,8,1)]
-void Normalize(uint3 id:SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void ApplyBoundCond(uint3 id : SV_DispatchThreadID)
 {
-    float w = _Weight[id.xy];
-    int idx = id.y * RESOLUTION + id.x;
-    if (w > 1e-6)
-    {
-        float vx = (float)_VelXBuffer[idx] / 1000.0f;
-        float vy = (float)_VelYBuffer[idx] / 1000.0f;
-        _Velocity[id.xy] = float2(vx, vy) / w;
+    if (id.x <= nx && id.y < ny) {
+        if (id.x == 0 || id.x == nx) _VelX[id.xy] = 0;
+        else if (_GridType[id.xy - int2(1, 0)] == 2 || _GridType[id.xy] == 2) _VelX[id.xy] = 0;
     }
-
-    _VelocityOld[id.xy] = _Velocity[id.xy];
+    if (id.x < nx && id.y <= ny) {
+        if (id.y == 0 || id.y == ny) _VelY[id.xy] = 0;
+        else if (_GridType[id.xy - int2(0, 1)] == 2 || _GridType[id.xy] == 2) _VelY[id.xy] = 0;
+    }
 }
 
-[numthreads(8,8,1)]
+[numthreads(8, 8, 1)]
 void Divergence(uint3 id : SV_DispatchThreadID)
 {
-    int2 p = id.xy;
-    // 境界チェック
-    if (p.x <= 0 || p.y <= 0 || p.x >= RESOLUTION - 1 || p.y >= RESOLUTION - 1)
-    {
-        _Divergence[p] = 0;
-        return;
-    }
-
-    // 速度の湧き出し
-    float2 L = _Velocity[p + int2(-1, 0)];
-    float2 R = _Velocity[p + int2(1, 0)];
-    float2 B = _Velocity[p + int2(0, -1)];
-    float2 T = _Velocity[p + int2(0, 1)];
-    float div = (R.x - L.x)/dx + (T.y - B.y) * 0.5 / dx;
-
-    _Divergence[p] = div;
+    if (id.x >= nx || id.y >= ny) return;
+    float uL = _VelX[id.xy];
+    float uR = _VelX[id.xy + int2(1, 0)];
+    float vD = _VelY[id.xy];
+    float vU = _VelY[id.xy + int2(0, 1)];
+    _Divergence[id.xy] = -(rho * h / dt) * ((uR - uL) + (vU - vD));
+    if (_GridType[id.xy] != 1) _Divergence[id.xy] = 0;
 }
 
-[numthreads(8,8,1)]
-void PressureSolve(uint3 id:SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void BuildDiag(uint3 id : SV_DispatchThreadID)
 {
-    int2 p = id.xy;
-    if (p.x < 1 || p.y < 1 || p.x >= RESOLUTION - 1 || p.y >= RESOLUTION - 1) return;
-
-    if (_Weight[p] <= 0.0)
-    {
-        _PressureTemp[p] = 0;
-        return;
+    if (id.x >= nx || id.y >= ny || _GridType[id.xy] != 1) {
+        _Precon[id.xy] = 1.0f; return;
     }
+    float diag = 0;
+    if (id.x > 0 && _GridType[id.xy - int2(1,0)] != 2) diag += 1;
+    if (id.x < nx-1 && _GridType[id.xy + int2(1,0)] != 2) diag += 1;
+    if (id.y > 0 && _GridType[id.xy - int2(0,1)] != 2) diag += 1;
+    if (id.y < ny-1 && _GridType[id.xy + int2(0,1)] != 2) diag += 1;
+    _Precon[id.xy] = (diag > 0) ? 1.0f / diag : 1.0f;
+}
 
-    float L = _Pressure[p + int2(-1, 0)];
-    float R = _Pressure[p + int2(1, 0)];
-    float B = _Pressure[p + int2(0, -1)];
-    float T = _Pressure[p + int2(0, 1)];
-    float div = _Divergence[p];
-    div *= 1.0 / dt;
+[numthreads(8, 8, 1)]
+void ApplyA(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y >= ny || _GridType[id.xy] != 1) { _Ap[id.xy] = 0; return; }
+    float d = _SearchDir[id.xy];
+    float dL = (id.x > 0 && _GridType[id.xy - int2(1,0)] != 2) ? _SearchDir[id.xy - int2(1,0)] : d;
+    float dR = (id.x < nx-1 && _GridType[id.xy + int2(1,0)] != 2) ? _SearchDir[id.xy + int2(1,0)] : d;
+    float dD = (id.y > 0 && _GridType[id.xy - int2(0,1)] != 2) ? _SearchDir[id.xy - int2(0,1)] : d;
+    float dU = (id.y < ny-1 && _GridType[id.xy + int2(0,1)] != 2) ? _SearchDir[id.xy + int2(0,1)] : d;
+    if (id.x > 0 && _GridType[id.xy - int2(1,0)] == 0) dL = 0;
+    if (id.x < nx-1 && _GridType[id.xy + int2(1,0)] == 0) dR = 0;
+    if (id.y > 0 && _GridType[id.xy - int2(0,1)] == 0) dD = 0;
+    if (id.y < ny-1 && _GridType[id.xy + int2(0,1)] == 0) dU = 0;
+    _Ap[id.xy] = (1.0f / _Precon[id.xy]) * d - (dL + dR + dD + dU);
+}
 
-    _PressureTemp[p] = (L + R + B + T - div * dx * dx) * 0.25;
+[numthreads(8, 8, 1)]
+void DotProduct(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y >= ny || _GridType[id.xy] != 1) return;
+    float a = _Residual[id.xy];
+    InterlockedAdd(_DotResult[0], (int)(a * a * DOT_SCALE));
+}
+
+[numthreads(8, 8, 1)]
+void UpdatePR(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < nx && id.y < ny && _GridType[id.xy] == 1) {
+        _Pressure[id.xy] += _Alpha * _SearchDir[id.xy];
+        _Residual[id.xy] -= _Alpha * _Ap[id.xy];
+    }
+}
+
+[numthreads(8, 8, 1)]
+void UpdateD(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < nx && id.y < ny && _GridType[id.xy] == 1) {
+        float z = _Residual[id.xy] * _Precon[id.xy]; 
+        _SearchDir[id.xy] = z + _Beta * _SearchDir[id.xy];
+    }
+}
+
+[numthreads(8, 8, 1)]
+void Projection(uint3 id : SV_DispatchThreadID)
+{
+    float coeff = dt / (rho * h);
+    if (id.x > 0 && id.x < nx && id.y < ny) {
+        if (_GridType[id.xy-int2(1,0)] == 1 || _GridType[id.xy] == 1)
+            _VelX[id.xy] -= coeff * (_Pressure[id.xy] - _Pressure[id.xy-int2(1,0)]);
+    }
+    if (id.x < nx && id.y > 0 && id.y < ny) {
+        if (_GridType[id.xy-int2(0,1)] == 1 || _GridType[id.xy] == 1)
+            _VelY[id.xy] -= coeff * (_Pressure[id.xy] - _Pressure[id.xy-int2(0,1)]);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void G2P(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)particleCount) return;
+    Particle p = _Particles[id.x];
+
+    // 新しいグリッド速度と、計算前の古いグリッド速度をサンプル
+    float2 v_new = SampleVelocity(p.position, _VelX, _VelY);
+    float2 v_old = SampleVelocity(p.position, _VelXOld, _VelYOld);
+
+    // FLIP速度更新: 現在の速度 + グリッドの速度変化
+    float2 v_flip = p.velocity + (v_new - v_old);
+    // PIC速度更新: グリッドの速度そのもの
+    float2 v_pic = v_new;
+
+    // flipRatio(0.95程度)でブレンド
+    p.velocity = lerp(v_pic, v_flip, flipRatio);
     
+    _Particles[id.x] = p;
 }
 
-[numthreads(8,8,1)]
-void Project(uint3 id:SV_DispatchThreadID)
-{
-    int2 p=id.xy;
-    if (p.x<=0||p.y<=0||p.x>=RESOLUTION-1||p.y>=RESOLUTION-1)
-        return;
-
-    float L=_Pressure[p+int2(-1,0)];
-    float R=_Pressure[p+int2(1,0)];
-    float B=_Pressure[p+int2(0,-1)];
-    float T=_Pressure[p+int2(0,1)];
-
-    float2 grad=float2(R-L,T-B)*0.5/dx;
-    _Velocity[p]-=grad * dt;
-}
-
-float2 SampleVelocity(float2 uv)
-{
-    float2 pos=uv*RESOLUTION;
-    int2 i=floor(pos);
-    float2 f=pos-i;
-
-    int2 i0=clamp(i,0,RESOLUTION-2);
-
-    float2 v00=_Velocity[i0];
-    float2 v10=_Velocity[i0+int2(1,0)];
-    float2 v01=_Velocity[i0+int2(0,1)];
-    float2 v11=_Velocity[i0+int2(1,1)];
-
-    return lerp(lerp(v00,v10,f.x),lerp(v01,v11,f.x),f.y);
-}
-
-float2 SampleVelocityOld(float2 uv)
-{
-    float2 pos=uv*RESOLUTION;
-    int2 i=floor(pos);
-    float2 f=pos-i;
-
-    int2 i0=clamp(i,0,RESOLUTION-2);
-
-    float2 v00=_VelocityOld[i0];
-    float2 v10=_VelocityOld[i0+int2(1,0)];
-    float2 v01=_VelocityOld[i0+int2(0,1)];
-    float2 v11=_VelocityOld[i0+int2(1,1)];
-
-    return lerp(lerp(v00,v10,f.x),lerp(v01,v11,f.x),f.y);
-}
-
-[numthreads(64,1,1)]
-void G2P(uint3 id:SV_DispatchThreadID)
+[numthreads(64, 1, 1)]
+void Advection(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)particleCount) return;
 
     Particle p = _Particles[id.x];
 
-    //グリッドからの速度更新
-    float2 vNew = SampleVelocity(p.position);
-    float2 vOld = SampleVelocityOld(p.position);
-    p.velocity = lerp(vNew, p.velocity + (vNew - vOld), flipRatio);
-    
-    //位置更新
+    // 前進オイラー
     p.position += p.velocity * dt;
 
-    //境界判定
-    float m = 0.02;
-    if(p.position.x < m){ p.position.x = m; p.velocity.x *= -0.2; }
-    if(p.position.x > 1-m){ p.position.x = 1-m; p.velocity.x *= -0.2; }
-    if(p.position.y < m){ p.position.y = m; p.velocity.y *= -0.2; }
-    if(p.position.y > 1-m){ p.position.y = 1-m; p.velocity.y *= -0.2; }
+    // 境界クランプ
+    p.position.x = clamp(p.position.x, 0.001, width - 0.001);
+    p.position.y = clamp(p.position.y, 0.001, height - 0.001);
 
     _Particles[id.x] = p;
+}
+
+[numthreads(8, 8, 1)]
+void DotProductGeneric(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < nx && id.y < ny && _GridType[id.xy] == 1) {
+        int dot = (int)(_TexA[id.xy] * _TexB[id.xy] * DOT_SCALE);
+        InterlockedAdd(_DotResult[0], dot);
+    }
+}
+
+[numthreads(8, 8, 1)]
+void InitCG(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y >= ny) return;
+
+    // 圧力の初期値
+    _Pressure[id.xy] = 0;
+
+    if (_GridType[id.xy] == 1) // Fluidセルのみ
+    {
+        // 初期残差 r = b - Ap (初期圧力が0なら r = b)
+        // ここでは Divergence をそのまま残差としてセット
+        float r = _Divergence[id.xy];
+        _Residual[id.xy] = r;
+
+        // 初期探索方向 d = M^-1 * r (Preconを適用)
+        _SearchDir[id.xy] = r * _Precon[id.xy];
+    }
+    else
+    {
+        _Residual[id.xy] = 0;
+        _SearchDir[id.xy] = 0;
+    }
+    
+    // Apバッファも一応クリア
+    _Ap[id.xy] = 0;
 }
