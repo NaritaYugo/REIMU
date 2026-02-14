@@ -1,4 +1,4 @@
-Shader "Custom/FLIP2D_Display"
+Shader "Custom/APIC2D_Display"
 {
     Properties
     {

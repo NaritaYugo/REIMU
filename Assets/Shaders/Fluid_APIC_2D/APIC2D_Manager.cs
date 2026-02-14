@@ -1,6 +1,6 @@
 using UnityEngine;
 
-public class FLIP2DManager : MonoBehaviour
+public class APIC2DManager : MonoBehaviour
 {
     public ComputeShader compute;
     public Material displayMaterial;
