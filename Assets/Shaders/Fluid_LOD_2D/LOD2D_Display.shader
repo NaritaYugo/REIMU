@@ -1,4 +1,4 @@
-Shader "Custom/APIC2D_Display"
+Shader "Custom/LOD2D_Display"
 {
     Properties
     {
@@ -25,8 +25,6 @@ Shader "Custom/APIC2D_Display"
             struct Particle {
                 float2 position;
                 float2 velocity;
-                float2 affineB_col0;
-                float2 affineB_col1;
             };
 
             struct Varyings

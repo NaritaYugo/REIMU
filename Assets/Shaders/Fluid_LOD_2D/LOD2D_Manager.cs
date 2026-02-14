@@ -1,13 +1,13 @@
 using UnityEngine;
 
-public class APIC2DManager : MonoBehaviour
+public class LOD2DManager : MonoBehaviour
 {
     public ComputeShader compute;
     public Material displayMaterial;
 
     const int RES = 64;
     const int PARTICLES = 100000;
-    const int maxIter = 100;
+    const int maxIter = 30;
     const float tolerance = 1e-9f;
     const int iteration = 32;
 
@@ -15,10 +15,6 @@ public class APIC2DManager : MonoBehaviour
     {
         public Vector2 position;
         public Vector2 velocity;
-        // B = [ col0.x  col1.x ]
-        //     [ col0.y  col1.y ]
-        public Vector2 affineB_col0;
-        public Vector2 affineB_col1;
     }
 
     ComputeBuffer particleBuf,velXBuf,velYBuf,weightXBuf,weightYBuf,dotBuf,cgVarsBuf;
@@ -32,7 +28,12 @@ public class APIC2DManager : MonoBehaviour
 
         // --- 1. StructuredBuffer の生成 ---
         // 粒子バッファ
-        particleBuf = new ComputeBuffer(PARTICLES, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Particle)));
+        particleBuf = new ComputeBuffer(
+            PARTICLES,
+            16,
+            ComputeBufferType.Structured
+        );
+
         // int型のアトミック加算用バッファ (SCALE倍して保存するため)
         // VelX は (nx + 1) * ny
         velXBuf = new ComputeBuffer((nx + 1) * ny, sizeof(int));
@@ -83,8 +84,6 @@ public class APIC2DManager : MonoBehaviour
             // 0.1 ～ 0.9 の間にランダムに配置（0.5付近）
             p[i].position = new Vector2(0.5f, 0.5f) + Random.insideUnitCircle * 0.3f;
             p[i].velocity = Vector2.zero;
-            p[i].affineB_col0 = Vector2.zero;
-            p[i].affineB_col1 = Vector2.zero;
         }
         particleBuf.SetData(p);
     }

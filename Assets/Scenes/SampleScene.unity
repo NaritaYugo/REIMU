@@ -206,7 +206,7 @@ Transform:
   m_GameObject: {fileID: 330585543}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: -14.4}
+  m_LocalPosition: {x: 0, y: 0, z: -28.86}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -383,7 +383,7 @@ MonoBehaviour:
   m_ShadowLayerMask: 1
   m_RenderingLayers: 1
   m_ShadowRenderingLayers: 1
---- !u!1 &822670939
+--- !u!1 &573374365
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -391,39 +391,25 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 822670944}
-  - component: {fileID: 822670943}
-  - component: {fileID: 822670942}
-  - component: {fileID: 822670941}
-  - component: {fileID: 822670940}
+  - component: {fileID: 573374369}
+  - component: {fileID: 573374368}
+  - component: {fileID: 573374367}
+  - component: {fileID: 573374366}
+  - component: {fileID: 573374370}
   m_Layer: 0
-  m_Name: Quad_APIC
+  m_Name: Quad
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &822670940
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 822670939}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: a197a25cdce09044e9aeec40024ab2e8, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::APIC2DManager
-  compute: {fileID: 7200000, guid: f6b4ac14de0ad104abddf6e2d9812283, type: 3}
-  displayMaterial: {fileID: 2100000, guid: 11b9ff26a604db144bf437285d6043bf, type: 2}
---- !u!64 &822670941
+--- !u!64 &573374366
 MeshCollider:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 822670939}
+  m_GameObject: {fileID: 573374365}
   m_Material: {fileID: 0}
   m_IncludeLayers:
     serializedVersion: 2
@@ -439,14 +425,14 @@ MeshCollider:
   m_Convex: 0
   m_CookingOptions: 30
   m_Mesh: {fileID: 10210, guid: 0000000000000000e000000000000000, type: 0}
---- !u!23 &822670942
+--- !u!23 &573374367
 MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 822670939}
-  m_Enabled: 0
+  m_GameObject: {fileID: 573374365}
+  m_Enabled: 1
   m_CastShadows: 1
   m_ReceiveShadows: 1
   m_DynamicOccludee: 1
@@ -488,29 +474,43 @@ MeshRenderer:
   m_SortingOrder: 0
   m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!33 &822670943
+--- !u!33 &573374368
 MeshFilter:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 822670939}
+  m_GameObject: {fileID: 573374365}
   m_Mesh: {fileID: 10210, guid: 0000000000000000e000000000000000, type: 0}
---- !u!4 &822670944
+--- !u!4 &573374369
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 822670939}
+  m_GameObject: {fileID: 573374365}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: -0}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 10, y: 10, z: 10}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &573374370
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 573374365}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eba6d468eaf821c4aacc70706380645a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::LOD2DManager
+  compute: {fileID: 7200000, guid: da8d685bca9b59449a57b17bf75199c4, type: 3}
+  displayMaterial: {fileID: 2100000, guid: c0bc68562718bf14789be744cd1c9461, type: 2}
 --- !u!1 &832575517
 GameObject:
   m_ObjectHideFlags: 0
@@ -647,4 +647,4 @@ SceneRoots:
   - {fileID: 410087041}
   - {fileID: 832575519}
   - {fileID: 1023675587}
-  - {fileID: 822670944}
+  - {fileID: 573374369}

@@ -41,10 +41,8 @@ float _Alpha;
 float _Beta;
 
 struct Particle {
-    float2 position;     // offset 0
-    float2 velocity;     // offset 8
-    float2 affineB_col0; // offset 16
-    float2 affineB_col1; // offset 24
+    float2 position;
+    float2 velocity;
 };
 
 //====================================================================
@@ -100,24 +98,25 @@ float2 SampleVelocity(float2 pos, RWTexture2D<float> vX, RWTexture2D<float> vY) 
 [numthreads(8,8,1)]
 void ClearGrid(uint3 id : SV_DispatchThreadID)
 {
-    // center grid (nx × ny)
-    if (id.x < nx && id.y < ny) {
+    if (id.x < nx && id.y < ny)
+    {
+        uint centerIdx = id.x + id.y * nx;
+        _WeightXBuffer[centerIdx] = 0;
+        _WeightYBuffer[centerIdx] = 0;
         _Divergence[id.xy] = 0;
         _Pressure[id.xy] = 0;
     }
 
-    // VelX + WeightX : (nx+1) × ny
-    if (id.x <= nx && id.y < ny) {
+    if (id.x <= nx && id.y < ny)
+    {
         uint uIdx = id.x + id.y * (nx + 1);
         _VelXBuffer[uIdx] = 0;
-        _WeightXBuffer[uIdx] = 0;
     }
 
-    // VelY + WeightY : nx × (ny+1)
-    if (id.x < nx && id.y <= ny) {
+    if (id.x < nx && id.y <= ny)
+    {
         uint vIdx = id.x + id.y * nx;
         _VelYBuffer[vIdx] = 0;
-        _WeightYBuffer[vIdx] = 0;
     }
 }
 
@@ -140,62 +139,51 @@ void P2G(uint3 id : SV_DispatchThreadID)
     if (id.x >= (uint)particleCount) return;
 
     Particle p = _Particles[id.x];
-    
     float2 pos = p.position;
     float2 vel = p.velocity;
-    float2 B0 = p.affineB_col0;
-    float2 B1 = p.affineB_col1;
 
-    // VelX: (coord.x*h, (coord.y+0.5)*h)
-    float2 u_pos_scaled = float2(pos.x / h, pos.y / h - 0.5);
-    int2 u_idx = (int2)floor(u_pos_scaled);
+    // --- VelX (u) ---
+    float2 u_pos = float2(pos.x / h, pos.y / h - 0.5);
+    int2 u_idx = (int2)floor(u_pos);
+    float2 u_f = u_pos - (float2)u_idx;
 
     for (int iu = 0; iu <= 1; iu++) {
         for (int ju = 0; ju <= 1; ju++) {
             int2 coord = u_idx + int2(iu, ju);
-            // P2G 内
-            if (coord.x >= 0 && coord.x < (int)nx + 1 && coord.y >= 0 && coord.y < (int)ny) {
+            if (coord.x >= 0 && coord.x <= (int)nx && coord.y >= 0 && coord.y < (int)ny) {
+                
+                // Python版のSolid判定ロジック:
+                // ix + ox > 0 and cell_type[ix + ox - 1, iy + oy] == 2
+                // ix + ox < nx and cell_type[ix + ox, iy + oy] == 2
                 bool is_solid = false;
                 if (coord.x > 0 && _GridType[int2(coord.x - 1, coord.y)] == 2) is_solid = true;
                 if (coord.x < (int)nx && _GridType[int2(coord.x, coord.y)] == 2) is_solid = true;
+
                 if (!is_solid) {
-                    // 重み計算
-                    float2 node_pos_unit = (float2)coord; // 単位格子上のノード位置
-                    float2 dist = (node_pos_unit - u_pos_scaled) * h; // 実際の空間での距離 (x_grid - x_p)
-                    float weight = (1.0 - abs(node_pos_unit.x - u_pos_scaled.x)) * (1.0 - abs(node_pos_unit.y - u_pos_scaled.y));
-
-                    // 行列Bと距離の積を速度に加算
-                    float v_affine_x = B0.x * dist.x + B0.y * dist.y;
-                    float weightVelX = (vel.x + v_affine_x) * weight;
-
+                    float weight = (iu * u_f.x + (1 - iu) * (1 - u_f.x)) * (ju * u_f.y + (1 - ju) * (1 - u_f.y));
                     int uIndex = coord.x + coord.y * (nx + 1);
-                    InterlockedAdd(_VelXBuffer[uIndex], (int)(weightVelX * SCALE));
-                    InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE));
+                    InterlockedAdd(_VelXBuffer[uIndex], (int)(vel.x * weight * SCALE));
+                    InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE)); // 専用ウェイト
                 }
             }
         }
     }
 
-    // VelY: ((coord.x+0.5)*h, coord.y)
-    float2 v_pos_scaled = float2(pos.x / h - 0.5, pos.y / h);
-    int2 v_idx = (int2)floor(v_pos_scaled);
+    // --- VelY (v) ---
+    float2 v_pos = float2(pos.x / h - 0.5, pos.y / h);
+    int2 v_idx = (int2)floor(v_pos);
+    float2 v_f = v_pos - (float2)v_idx;
 
     for (int iv = 0; iv <= 1; iv++) {
         for (int jv = 0; jv <= 1; jv++) {
             int2 coord = v_idx + int2(iv, jv);
             if (coord.x >= 0 && coord.x < (int)nx && coord.y >= 0 && coord.y <= (int)ny) {
-                // 重み計算
-                float2 node_pos_unit = (float2)coord;
-                float2 dist = (node_pos_unit - v_pos_scaled) * h;
-                float weight = (1.0 - abs(node_pos_unit.x - v_pos_scaled.x)) * (1.0 - abs(node_pos_unit.y - v_pos_scaled.y));
-
-                // 行列Bと距離の積を速度に加算
-                float v_affine_y = B1.x * dist.x + B1.y * dist.y;
-                float weightVelY = (vel.y + v_affine_y) * weight;
-
+                
+                // Python版のv側にはSolid判定がないため、ここではそのまま加算
+                float weight = (iv * v_f.x + (1 - iv) * (1 - v_f.x)) * (jv * v_f.y + (1 - jv) * (1 - v_f.y));
                 int vIndex = coord.x + coord.y * nx;
-                InterlockedAdd(_VelYBuffer[vIndex], (int)(weightVelY * SCALE));
-                InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE));
+                InterlockedAdd(_VelYBuffer[vIndex], (int)(vel.y * weight * SCALE));
+                InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE)); // 専用ウェイト
             }
         }
     }
@@ -426,87 +414,41 @@ void Projection(uint3 id : SV_DispatchThreadID)
 void G2P_Advection(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)particleCount) return;
-
     Particle p = _Particles[id.x];
 
-    if (any(p.position < 0) || any(p.position > float2(nx*h, ny*h)))
-    {
-        p.velocity = 0;
-        _Particles[id.x] = p;
-        return;
-    }
+    // --- G2P Step ---
+    float2 v_new = SampleVelocity(p.position, _VelX, _VelY);
+    float2 v_old = SampleVelocity(p.position, _VelXOld, _VelYOld);
 
-    float2 new_vel = float2(0, 0);
-    float2 new_B0  = float2(0, 0);
-    float2 new_B1  = float2(0, 0);
-
-    // X velocity (u grid): (nx+1) × ny
-    float2 u_pos_scaled = float2(p.position.x / h,p.position.y / h - 0.5);
-    int2 u_idx = (int2)floor(u_pos_scaled);
-
-    for (int iu = 0; iu <= 1; iu++) {
-        for (int ju = 0; ju <= 1; ju++) {
-            int2 coord = u_idx + int2(iu, ju);
-            // ---- 境界チェック ----
-            if (coord.x < 0 || coord.x > (int)nx) continue;
-            if (coord.y < 0 || coord.y >= (int)ny) continue;
-
-            float2 node_pos_unit = (float2)coord;
-            float2 diff = node_pos_unit - u_pos_scaled;
-            float weight = (1.0 - abs(diff.x)) * (1.0 - abs(diff.y));
-            float grid_v = _VelX[coord];
-            new_vel.x += grid_v * weight;
-            float2 dist = diff * h;
-            new_B0 += weight * grid_v * dist;
-        }
-    }
-
-    // Y velocity (v grid): nx × (ny+1)
-    float2 v_pos_scaled = float2(p.position.x / h - 0.5, p.position.y / h);
-    int2 v_idx = (int2)floor(v_pos_scaled);
-
-    for (int iv = 0; iv <= 1; iv++) {
-        for (int jv = 0; jv <= 1; jv++) {
-            int2 coord = v_idx + int2(iv, jv);
-            // ---- 境界チェック ----
-            if (coord.x < 0 || coord.x >= (int)nx) continue;
-            if (coord.y < 0 || coord.y > (int)ny) continue;
-
-            float2 node_pos_unit = (float2)coord;
-            float2 diff = node_pos_unit - v_pos_scaled;
-            float weight = (1.0 - abs(diff.x)) * (1.0 - abs(diff.y));
-            float grid_v = _VelY[coord];
-            new_vel.y += grid_v * weight;
-            float2 dist = diff * h;
-            new_B1 += weight * grid_v * dist;
-        }
-    }
-    // APICの係数調整
-    p.velocity = new_vel;
-    float inv_h2 = (4.0 / (h * h)) * 0.7; // 1.0より小さくすると粘性が下がる
-    p.affineB_col0 = new_B0 * inv_h2;
-    p.affineB_col1 = new_B1 * inv_h2;
+    float2 v_flip = p.velocity + (v_new - v_old);
+    float2 v_pic = v_new;
+    float2 final_vel = lerp(v_pic, v_flip, flipRatio);
 
     // --- Sleep & Deep Check ---
-    float speed = length(new_vel);
-    if (speed < 0.01f) { 
-        new_vel *= 0.8f; // 完全に消さずに徐々に殺す（ジッタ防止）
-        p.affineB_col0 *= 0.5f;
-        p.affineB_col1 *= 0.5f;
+    int2 center = (int2)floor(p.position / h);
+    bool is_deep = true;
+    if (center.x > 0 && center.x < (int)nx - 1 && center.y > 0 && center.y < (int)ny - 1) {
+        // 周囲4マスにAir(0)があれば Deep ではない
+        if (_GridType[center + int2(1, 0)] == 0 || _GridType[center - int2(1, 0)] == 0 ||
+            _GridType[center + int2(0, 1)] == 0 || _GridType[center - int2(0, 1)] == 0) {
+            is_deep = false;
+        }
+    } else {
+        is_deep = false;
     }
 
-    // 完全に止める条件を厳しくする
-    if (speed < 0.002f) {
-        new_vel = float2(0,0);
-        p.affineB_col0 = float2(0,0);
-        p.affineB_col1 = float2(0,0);
+    float speed = length(final_vel);
+    bool sleep = (speed < 0.02f) && is_deep;
+
+    if (sleep) {
+        final_vel = float2(0, 0);
     }
-    p.velocity = new_vel;
+    p.velocity = final_vel;
 
     // --- Advection Step ---
     p.position += p.velocity * dt;
 
-    // --- Boundary Clamp ---
+    // 境界クランプ
     float margin = 0.5f * h;
     p.position.x = clamp(p.position.x, 1 * h + margin, (nx - 1) * h - margin);
     p.position.y = clamp(p.position.y, 1 * h + margin, (ny - 1) * h - margin);
@@ -515,10 +457,10 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
         p.position.y = h + margin;
         // 地面に触れた瞬間に少しだけ上向きの速度を与える
         if (p.velocity.y < 0) {
-            p.velocity.y *= -0.1f;
+            p.velocity.y *= -0.1f; // 反発係数
         }
     }
-    // 天井に張り付かないよう、クランプより下で反発させる
+    //天井に張り付かないよう、クランプより下で反発させる
     if (p.position.y > (ny - 2) * h - margin) {
         p.position.y = (ny - 2) * h - margin;
         if (p.velocity.y > 0) {
@@ -531,13 +473,13 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
             p.velocity.x *= -0.1f; 
         }
     }
-    if (p.position.x > (nx - 1) * h - margin) {
-        p.position.x = (nx - 1) * h - margin;
+    if (p.position.x > (ny - 1) * h - margin) {
+        p.position.y = (ny - 1) * h - margin;
         if (p.velocity.x > 0) {
             p.velocity.x *= -0.1f; 
         }
     }
-    
+
     _Particles[id.x] = p;
 }
 
@@ -558,7 +500,8 @@ void InitCG(uint3 id : SV_DispatchThreadID)
     // 圧力の初期値
     _Pressure[id.xy] = 0;
 
-    if (_GridType[id.xy] == 1) {
+    if (_GridType[id.xy] == 1) // Fluidセルのみ
+    {
         // 初期残差 r = b - Ap (初期圧力が0なら r = b)
         // ここでは Divergence をそのまま残差としてセット
         float r = _Divergence[id.xy];
@@ -567,7 +510,8 @@ void InitCG(uint3 id : SV_DispatchThreadID)
         // 初期探索方向 d = M^-1 * r (Preconを適用)
         _SearchDir[id.xy] = r * _Precon[id.xy];
     }
-    else {
+    else
+    {
         _Residual[id.xy] = 0;
         _SearchDir[id.xy] = 0;
     }
@@ -585,6 +529,8 @@ void DotProductPreconditioned(uint3 id : SV_DispatchThreadID)
     float r = _Residual[id.xy];
     float minv = _Precon[id.xy];
     
+    // Python版 delta_new = np.sum(r * z) 
+    // z = r * minv なので、r * r * minv を加算する
     float val = r * r * minv;
 
     InterlockedAdd(_DotResult[0], (int)(val * DOT_SCALE));
@@ -598,6 +544,7 @@ void CalculateAlpha(uint3 id : SV_DispatchThreadID) {
     _CGVars[1] = dAd;
     
     // ガードを極めて強くする
+    // dAdが少しでも怪しければ alpha を 0 にしてそのループを無効化する
     if (dAd > 1e-15f) {
         _CGVars[2] = rTr / dAd;
     } else {
