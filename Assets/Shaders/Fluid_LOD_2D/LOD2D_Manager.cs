@@ -5,9 +5,16 @@ public class LOD2DManager : MonoBehaviour
     public ComputeShader compute;
     public Material displayMaterial;
 
-    const int RES = 64;
+    const float dt = 0.01f;
+    float width,height;
+    int nx,ny;
+    const int RES = 64; // 長さ1.0fあたりのセル数。2^nにする。
+    const float h = 1.0f / (float)RES; // 1セルの幅
+    const float gravity = -9.8f;
+    const float flipRatio = 0.99f;
+    const float rho = 1.0f; //密度
     const int PARTICLES = 100000;
-    const int maxIter = 30;
+    const int maxIter = 15;
     const float tolerance = 1e-9f;
     const int iteration = 32;
 
@@ -17,14 +24,27 @@ public class LOD2DManager : MonoBehaviour
         public Vector2 velocity;
     }
 
+    struct MGLevel {
+        public RenderTexture pressure;
+        public RenderTexture divergence; // 粗い階層では「b」として機能
+        public RenderTexture type;
+        public RenderTexture residual;
+        public int width;
+        public int height;
+    }
+
+    MGLevel[] mgLevels;
+
     ComputeBuffer particleBuf,velXBuf,velYBuf,weightXBuf,weightYBuf,dotBuf,cgVarsBuf;
     RenderTexture velXTex,velYTex,velXOldTex,velYOldTex,presTex,divTex,resTex,dirTex,apTex,preconTex,typeTex;
 
     void Start()
     {
-        // グリッド解像度の設定
-        int nx = RES;
-        int ny = RES;
+        width = transform.localScale.x;
+        height = transform.localScale.y;
+
+        nx = Mathf.RoundToInt(width * RES);
+        ny = Mathf.RoundToInt(height * RES);
 
         // --- 1. StructuredBuffer の生成 ---
         // 粒子バッファ
@@ -76,13 +96,47 @@ public class LOD2DManager : MonoBehaviour
         InitParticles();
     }
 
+    void InitMultiGrid(int baseW, int baseH) {
+        // 階層数を計算（例：最小サイズが4x4になるまで）
+        int numLevels = Mathf.FloorToInt(Mathf.Log(Mathf.Min(baseW, baseH), 2)) - 1;
+        
+        // 配列の初期化
+        mgLevels = new MGLevel[numLevels];
+
+        int curW = baseW;
+        int curH = baseH;
+
+        for (int i = 0; i < numLevels; i++) {
+            mgLevels[i] = new MGLevel();
+            mgLevels[i].width = curW;
+            mgLevels[i].height = curH;
+
+            // 各レベルのテクスチャを作成
+            mgLevels[i].pressure = CreateRT(curW, curH, RenderTextureFormat.RFloat);
+            mgLevels[i].divergence = CreateRT(curW, curH, RenderTextureFormat.RFloat);
+            mgLevels[i].type = CreateRT(curW, curH, RenderTextureFormat.RInt);
+            mgLevels[i].residual = CreateRT(curW, curH, RenderTextureFormat.RFloat);
+
+            // 次のレベルは解像度半分
+            curW /= 2;
+            curH /= 2;
+        }
+    }
+
+    RenderTexture CreateRT(int w, int h, RenderTextureFormat fmt) {
+        RenderTexture rt = new RenderTexture(w, h, 0, fmt);
+        rt.enableRandomWrite = true;
+        rt.filterMode = FilterMode.Point; // 圧力量なので補完しない（重要）
+        rt.Create();
+        return rt;
+    }
+
     void InitParticles()
     {
         Particle[] p = new Particle[PARTICLES];
         for (int i = 0; i < PARTICLES; i++)
         {
-            // 0.1 ～ 0.9 の間にランダムに配置（0.5付近）
-            p[i].position = new Vector2(0.5f, 0.5f) + Random.insideUnitCircle * 0.3f;
+            p[i].position = new Vector2(width/2, height/2) + Random.insideUnitCircle * 0.4f;
             p[i].velocity = Vector2.zero;
         }
         particleBuf.SetData(p);
@@ -90,27 +144,29 @@ public class LOD2DManager : MonoBehaviour
 
     void Update()
     {
+
         // グループ数の計算
         int threadGroups = Mathf.CeilToInt((float)PARTICLES / 64f);
-        int gridGroups = Mathf.CeilToInt((float)RES / 8f);
-        int gridGroupsX = Mathf.CeilToInt((float)(RES + 1) / 8f); // VelX用
-        int gridGroupsY = Mathf.CeilToInt((float)(RES + 1) / 8f); // VelY用
+        int groupX = Mathf.CeilToInt((float)nx / 8f);
+        int groupY = Mathf.CeilToInt((float)ny / 8f);
+        int groupVelX = Mathf.CeilToInt((float)(nx + 1) / 8f);
+        int groupVelY = Mathf.CeilToInt((float)(ny + 1) / 8f);
 
         // 定数セット
-        compute.SetFloat("dt", 0.002f);
-        compute.SetFloat("h", 1.0f / (float)RES);
-        compute.SetInt("nx", RES);
-        compute.SetInt("ny", RES);
+        compute.SetFloat("dt", dt);
+        compute.SetFloat("h", h);
+        compute.SetInt("nx", nx);
+        compute.SetInt("ny", ny);
         compute.SetInt("particleCount", PARTICLES);
-        compute.SetFloat("width", 1.0f);
-        compute.SetFloat("height", 1.0f);
-        compute.SetFloat("rho", 1);
-        compute.SetFloat("gravity", -9.8f);
-        compute.SetFloat("flipRatio", 0.99f);
+        compute.SetFloat("width", width);
+        compute.SetFloat("height", height);
+        compute.SetFloat("rho", rho);
+        compute.SetFloat("gravity", gravity);
+        compute.SetFloat("flipRatio", flipRatio);
         compute.SetInt("maxIter", maxIter);
         compute.SetFloat("tolerance", tolerance);
 
-        // 1. Grid Clear
+        // 1. Grid Clear & Mark Cell Types
         int kCla = compute.FindKernel("ClearGrid");
         compute.SetBuffer(kCla, "_VelXBuffer", velXBuf);
         compute.SetBuffer(kCla, "_VelYBuffer", velYBuf);
@@ -118,14 +174,10 @@ public class LOD2DManager : MonoBehaviour
         compute.SetBuffer(kCla, "_WeightYBuffer", weightYBuf);
         compute.SetTexture(kCla, "_Pressure", presTex);
         compute.SetTexture(kCla, "_Divergence", divTex);
-        compute.Dispatch(kCla, gridGroups, gridGroups, 1);
+        compute.SetTexture(kCla, "_GridType", typeTex);
+        compute.Dispatch(kCla, groupX, groupY, 1);
 
-        // 2. Mark Cell Types
-        int kCellType = compute.FindKernel("MarkCellTypes");
-        compute.SetTexture(kCellType, "_GridType", typeTex);
-        compute.Dispatch(kCellType, RES / 8, RES / 8, 1);
-
-        // 3. P2G
+        // 2. P2G
         int kP2G = compute.FindKernel("P2G");
         compute.SetBuffer(kP2G, "_Particles", particleBuf);
         compute.SetBuffer(kP2G, "_VelXBuffer", velXBuf);
@@ -135,33 +187,54 @@ public class LOD2DManager : MonoBehaviour
         compute.SetTexture(kP2G, "_GridType", typeTex);
         compute.Dispatch(kP2G, threadGroups, 1, 1);
 
-        // 4. Normalize
-        int kNormX = compute.FindKernel("NormalizeVelX");
-        compute.SetBuffer(kNormX, "_VelXBuffer", velXBuf);
-        compute.SetBuffer(kNormX, "_WeightXBuffer", weightXBuf);
-        compute.SetTexture(kNormX, "_VelX", velXTex);
-        compute.Dispatch(kNormX, gridGroupsX, gridGroups, 1);
+        // 3. Normalize
+        int kNorm = compute.FindKernel("NormalizeVel");
+        compute.SetBuffer(kNorm, "_VelXBuffer", velXBuf);
+        compute.SetBuffer(kNorm, "_VelYBuffer", velYBuf);
+        compute.SetBuffer(kNorm, "_WeightXBuffer", weightXBuf);
+        compute.SetBuffer(kNorm, "_WeightYBuffer", weightYBuf);
+        compute.SetTexture(kNorm, "_VelX", velXTex);
+        compute.SetTexture(kNorm, "_VelY", velYTex);
+        compute.Dispatch(kNorm, groupVelX, groupVelY, 1);
 
-        int kNormY = compute.FindKernel("NormalizeVelY");
-        compute.SetBuffer(kNormY, "_VelYBuffer", velYBuf);
-        compute.SetBuffer(kNormY, "_WeightYBuffer", weightYBuf);
-        compute.SetTexture(kNormY, "_VelY", velYTex);
-        compute.Dispatch(kNormY, gridGroups, gridGroupsY, 1);
-
-        // 6. Backup Velocity
+        // 4. Backup Velocity
         Graphics.CopyTexture(velXTex, velXOldTex);
         Graphics.CopyTexture(velYTex, velYOldTex);
 
         // 5. External Forces & Boundary
         int kGrav = compute.FindKernel("AddGravity");
         compute.SetTexture(kGrav, "_VelY", velYTex);
-        compute.Dispatch(kGrav, RES / 8, RES / 8, 1);
+        compute.Dispatch(kGrav, groupVelX, groupVelY, 1);
 
         int kBound = compute.FindKernel("ApplyBoundCond");
         compute.SetTexture(kBound, "_VelX", velXTex);
         compute.SetTexture(kBound, "_VelY", velYTex);
         compute.SetTexture(kBound, "_GridType", typeTex);
-        compute.Dispatch(kBound, RES / 8, RES / 8, 1);
+        compute.Dispatch(kBound, groupVelX, groupVelY, 1);
+
+        // 6.マウス判定
+        if (Input.GetMouseButton(0) || Input.GetMouseButton(1))
+            {
+                
+                Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+                if (Physics.Raycast(ray, out RaycastHit hit))
+                {
+                    
+                    // hit.textureCoord は 0.0～1.0 なので、シミュレーションサイズを掛ける
+                    Vector2 mousePos = new Vector2(hit.textureCoord.x * width, hit.textureCoord.y * height);
+                    int kMouse = compute.FindKernel("MouseInteraction");
+                    compute.SetInt("_MouseClick", Input.GetMouseButton(0) ? 1 : 2); // 1:左(吸い込み) 2:右(弾く)
+                    compute.SetVector("_MousePos", mousePos);
+                    compute.SetTexture(kMouse, "_VelX", velXTex);
+                    compute.SetTexture(kMouse, "_VelY", velYTex);
+                    compute.SetTexture(kMouse, "_GridType", typeTex);
+                    compute.Dispatch(kMouse, groupVelX, groupVelY, 1);
+                }
+            }
+            else
+            {
+                compute.SetInt("_MouseClick", 0);
+            }
 
         // 7. Divergence & Build Diagonal
         int kDiv = compute.FindKernel("Divergence");
@@ -169,15 +242,15 @@ public class LOD2DManager : MonoBehaviour
         compute.SetTexture(kDiv, "_VelY", velYTex);
         compute.SetTexture(kDiv, "_Divergence", divTex);
         compute.SetTexture(kDiv, "_GridType", typeTex);
-        compute.Dispatch(kDiv, RES / 8, RES / 8, 1);
+        compute.Dispatch(kDiv, groupVelX, groupVelY, 1);
 
         int kDiag = compute.FindKernel("BuildDiag");
         compute.SetTexture(kDiag, "_GridType", typeTex);
         compute.SetTexture(kDiag, "_Precon", preconTex);
-        compute.Dispatch(kDiag, RES / 8, RES / 8, 1);
+        compute.Dispatch(kDiag, groupX, groupY, 1);
 
         // 8. Conjugate Gradient Loop
-        SolvePressure(gridGroups);
+        SolvePressure(groupX, groupY);
 
         // 9. Projection
         int kProj = compute.FindKernel("Projection");
@@ -185,7 +258,7 @@ public class LOD2DManager : MonoBehaviour
         compute.SetTexture(kProj, "_GridType", typeTex);
         compute.SetTexture(kProj, "_VelX", velXTex);
         compute.SetTexture(kProj, "_VelY", velYTex);
-        compute.Dispatch(kProj, RES / 8, RES / 8, 1);
+        compute.Dispatch(kProj, groupVelX, groupVelY, 1);
 
         // 10. G2P, Advection
         int kG2PAdv = compute.FindKernel("G2P_Advection");
@@ -196,9 +269,11 @@ public class LOD2DManager : MonoBehaviour
         compute.SetTexture(kG2PAdv, "_VelYOld", velYOldTex);
         compute.SetTexture(kG2PAdv, "_GridType", typeTex);
         compute.Dispatch(kG2PAdv, threadGroups, 1, 1);
+        
     }
+    
 
-    void SolvePressure(int groups)
+    void SolvePressure(int groupX, int groupY)
     {
         // --- A. 初期化フェーズ ---
         // 1. dotResult と CGVars をリセット
@@ -209,53 +284,69 @@ public class LOD2DManager : MonoBehaviour
         // 2. InitCG
         int kInit = compute.FindKernel("InitCG");
         compute.SetTexture(kInit, "_Pressure", presTex);
-        compute.SetTexture(kInit, "_Divergence", divTex);
         compute.SetTexture(kInit, "_Residual", resTex);
         compute.SetTexture(kInit, "_SearchDir", dirTex);
-        compute.SetTexture(kInit, "_Precon", preconTex);
         compute.SetTexture(kInit, "_GridType", typeTex);
-        compute.SetTexture(kInit, "_Ap", apTex);
-        compute.Dispatch(kInit, groups, groups, 1);
+        compute.Dispatch(kInit, groupX, groupY, 1);
 
-        // 3. 初回の rTr 計算
-        int kDotPrecon = compute.FindKernel("DotProductPreconditioned");
-        compute.SetTexture(kDotPrecon, "_Residual", resTex);
-        compute.SetTexture(kDotPrecon, "_Precon", preconTex);
-        compute.SetBuffer(kDotPrecon, "_DotResult", dotBuf);
-        compute.SetTexture(kDotPrecon, "_GridType", typeTex);
-        compute.Dispatch(kDotPrecon, groups, groups, 1);
+        // 2. 現在の圧力 p から Ap を計算 (Warm Start用)
+        int kap = compute.FindKernel("ApplyA");
+        compute.SetTexture(kap, "_SearchDir", presTex); // SearchDirの代わりにPressureを渡す
+        compute.SetTexture(kap, "_Ap", apTex);
+        compute.SetTexture(kap, "_GridType", typeTex);
+        compute.Dispatch(kap, groupX, groupY, 1);
 
-        // 4. 計算されたドット積を CGVars[0] (rTr) に格納
-        int kStoreRTr = compute.FindKernel("ComputeInitialRTr");
-        compute.SetBuffer(kStoreRTr, "_DotResult", dotBuf);
-        compute.SetBuffer(kStoreRTr, "_CGVars", cgVarsBuf);
-        compute.Dispatch(kStoreRTr, 1, 1, 1);
+        // 3. 初期残差 r = b - Ap を計算
+        int kRes = compute.FindKernel("ComputeInitialResidual");
+        compute.SetTexture(kRes, "_Divergence", divTex);
+        compute.SetTexture(kRes, "_Ap", apTex);
+        compute.SetTexture(kRes, "_Residual", resTex);
+        compute.SetTexture(kRes, "_SearchDir", dirTex);
+        compute.SetTexture(kRes, "_Precon", preconTex);
+        compute.SetTexture(kRes, "_GridType", typeTex);
+        compute.Dispatch(kRes, groupX, groupY, 1);
+
+        // 4. 初回の rTr 計算: precon*res*res
+        int kDot = compute.FindKernel("DotProduct");
+        compute.SetInt("_UsePrecon", 1);
+        compute.SetTexture(kDot, "_TexA", resTex);
+        compute.SetTexture(kDot, "_TexB", resTex);
+        compute.SetTexture(kDot, "_Precon", preconTex); // 計算には使用しない
+        compute.SetBuffer(kDot, "_DotResult", dotBuf);
+        compute.SetTexture(kDot, "_GridType", typeTex);
+        compute.Dispatch(kDot, groupX, groupY, 1);
+
+        // 5. 計算されたドット積を CGVars[0] (rTr) に格納
+        int kManage = compute.FindKernel("ManageCG");
+        compute.SetInt("_CGPhase", 0);
+        compute.SetBuffer(kManage, "_DotResult", dotBuf);
+        compute.SetBuffer(kManage, "_CGVars", cgVarsBuf);
+        compute.Dispatch(kManage, 1, 1, 1);
 
         // --- B. CG反復フェーズ ---
         for (int i = 0; i < iteration; i++)
         {
             // 1. Ap = A * d
-            int kap = compute.FindKernel("ApplyA");
             compute.SetTexture(kap, "_GridType", typeTex);
             compute.SetTexture(kap, "_Ap", apTex);
             compute.SetTexture(kap, "_SearchDir", dirTex);
             compute.SetTexture(kap, "_Precon", preconTex);
-            compute.Dispatch(kap, groups, groups, 1);
+            compute.Dispatch(kap, groupX, groupY, 1);
 
             // 2. dAd (d * Ap) の計算準備
-            dotBuf.SetData(new int[] { 0 }); 
-            int kDotGen = compute.FindKernel("DotProductGeneric");
-            compute.SetTexture(kDotGen, "_TexA", dirTex);
-            compute.SetTexture(kDotGen, "_TexB", apTex);
-            compute.SetBuffer(kDotGen, "_DotResult", dotBuf);
-            compute.SetTexture(kDotGen, "_GridType", typeTex);
-            compute.Dispatch(kDotGen, groups, groups, 1);
+            compute.SetInt("_UsePrecon", 0);
+            compute.SetTexture(kDot, "_TexA", dirTex);
+            compute.SetTexture(kDot, "_TexB", apTex);
+            compute.SetTexture(kDot, "_Precon", preconTex); // 計算には使用しない
+            compute.SetBuffer(kDot, "_DotResult", dotBuf);
+            compute.SetTexture(kDot, "_GridType", typeTex);
+            compute.Dispatch(kDot, groupX, groupY, 1);
 
             // 3. alpha = rTr / dAd の計算
-            int kAlpha = compute.FindKernel("CalculateAlpha");
-            compute.SetBuffer(kAlpha, "_DotResult", dotBuf);
-            compute.SetBuffer(kAlpha, "_CGVars", cgVarsBuf);
-            compute.Dispatch(kAlpha, 1, 1, 1);
+            compute.SetInt("_CGPhase", 1);
+            compute.SetBuffer(kManage, "_DotResult", dotBuf);
+            compute.SetBuffer(kManage, "_CGVars", cgVarsBuf);
+            compute.Dispatch(kManage, 1, 1, 1);
 
             // 4. Update P, R (バッファからAlphaを直接読む)
             int kUpdatePR = compute.FindKernel("UpdatePR");
@@ -265,19 +356,19 @@ public class LOD2DManager : MonoBehaviour
             compute.SetTexture(kUpdatePR, "_SearchDir", dirTex);
             compute.SetTexture(kUpdatePR, "_Residual", resTex);
             compute.SetTexture(kUpdatePR, "_Ap", apTex);
-            compute.Dispatch(kUpdatePR, RES / 8, RES / 8, 1);
+            compute.Dispatch(kUpdatePR, groupX, groupY, 1);
 
             // 5. 新しい rTr (rTr_new) の計算準備
-            dotBuf.SetData(new int[] { 0 });
-            compute.SetTexture(kDotPrecon, "_Residual", resTex);
-            compute.SetTexture(kDotPrecon, "_Precon", preconTex);
-            compute.Dispatch(kDotPrecon, groups, groups, 1);
+            compute.SetInt("_UsePrecon", 1);
+            compute.SetTexture(kDot, "_TexA", resTex);
+            compute.SetTexture(kDot, "_TexB", resTex);
+            compute.Dispatch(kDot, groupX, groupY, 1);
 
             // 6. beta = rTr_new / rTr_old の計算
-            int kBeta = compute.FindKernel("CalculateBeta");
-            compute.SetBuffer(kBeta, "_DotResult", dotBuf);
-            compute.SetBuffer(kBeta, "_CGVars", cgVarsBuf);
-            compute.Dispatch(kBeta, 1, 1, 1);
+            compute.SetInt("_CGPhase", 2);
+            compute.SetBuffer(kManage, "_DotResult", dotBuf);
+            compute.SetBuffer(kManage, "_CGVars", cgVarsBuf);
+            compute.Dispatch(kManage, 1, 1, 1);
 
             // 7. Update D (バッファからBetaを直接読む)
             int kUpdateD = compute.FindKernel("UpdateD");
@@ -286,20 +377,22 @@ public class LOD2DManager : MonoBehaviour
             compute.SetTexture(kUpdateD, "_SearchDir", dirTex);
             compute.SetTexture(kUpdateD, "_Residual", resTex);
             compute.SetTexture(kUpdateD, "_Precon", preconTex);
-            compute.Dispatch(kUpdateD, groups, groups, 1);
+            compute.Dispatch(kUpdateD, groupX, groupY, 1);
         }
     }
 
     void OnRenderObject()
     {
-        displayMaterial.SetInt("_Res", RES);
+        displayMaterial.SetFloat("_width", width);
+        displayMaterial.SetFloat("_height", height);
+        displayMaterial.SetInt("_nx", nx);
+        displayMaterial.SetInt("_ny", ny);
         if (particleBuf == null) return;
 
         // 1. マテリアルにデータをセット
         displayMaterial.SetBuffer("_Particles", particleBuf);
         displayMaterial.SetVector("_ObjPos", transform.position);
         displayMaterial.SetVector("_ObjScale", transform.localScale);
-        displayMaterial.SetInt("_Res", RES);
 
         // 2. 描画実行 (Pass 0 を使用)
         displayMaterial.SetPass(0);

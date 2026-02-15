@@ -44,7 +44,10 @@ Shader "Custom/LOD2D_Display"
             StructuredBuffer<Particle> _Particles;
             float3 _ObjPos;
             float3 _ObjScale;
-            int _Res; // グリッド解像度
+            float _width; 
+            float _height; 
+            int _nx;
+            int _ny;
 
             Varyings vert(uint id : SV_VertexID)
             {
@@ -55,14 +58,12 @@ Shader "Custom/LOD2D_Display"
                 
                 Particle p = _Particles[particleIdx];
                 
-                float2 offset = kOffsets[vertexIdx] * 0.01; 
-                float div = (_Res > 0) ? (float)_Res : 1.0;
-                float2 normPos = p.position;
-                
-                // 距離ではなく、xかyが明らかに1を超えているかで判定
-                if(p.position.x > 1.1 || p.position.y > 1.1) {
-                    normPos = p.position / div;
-                }
+                float aspect = _width / _height;
+                float2 offset = kOffsets[vertexIdx] * 0.01;
+                offset.x /= aspect; // 横方向の伸びをキャンセル
+
+                // normPos を「0～1」にする
+                float2 normPos = float2(p.position.x / _width, p.position.y / _height);
 
                 // シミュレーション空間(0~1)をローカル空間(-0.5~0.5)へ
                 float3 localPos = float3(normPos.x - 0.5 + offset.x, normPos.y - 0.5 + offset.y, 0);
@@ -72,7 +73,7 @@ Shader "Custom/LOD2D_Display"
                 
                 OUT.positionCS = TransformWorldToHClip(worldPos);
                 OUT.uv = kOffsets[vertexIdx];
-                
+
                 // 速度に応じた色付け
                 float speed = length(p.velocity);
                 float4 colorRed    = float4(1, 0, 0, 1);
