@@ -1,4 +1,3 @@
-//====================================================================
 #pragma kernel ClearGrid
 #pragma kernel P2G
 #pragma kernel NormalizeVel
@@ -16,6 +15,11 @@
 #pragma kernel ManageCG //ComputeInitialRTr,CalculateAlpha,CalculateBeta
 #pragma kernel ComputeInitialResidual
 #pragma kernel MouseInteraction
+#pragma kernel SpawnParticles
+#pragma kernel InitDeadPool
+#pragma kernel CollectActiveList
+#pragma kernel InitAllParticles
+#pragma kernel TransferDeadVelocity
 
 #define SCALE 10000.0f 
 #define DOT_SCALE 100000.0f
@@ -40,12 +44,41 @@ float flipRatio;
 float tolerance;
 float _Alpha;
 float _Beta;
+float _flipPos; 
+float _picPos; 
+float _eulerPos; 
+float _swePos; 
+float _fftPos; 
 float2 _MousePos;
+float _aspectRatio;
+float _RecoveryFactor;
+
+float _TargetCount;
+uint _maxParticles;
+uint _CurrentCount;
+float _Time;           // 乱数用
 
 struct Particle {
     float2 position;
     float2 velocity;
+    int active; // boolの代わりにintを使用 (0: false, 1: true)
+    int padding;         // 4 bytes (パディング)
 };
+
+// 乱数生成
+float rand(float2 co) {
+    return frac(sin(dot(co, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+// 距離計算
+float GetDistanceRatio(float2 pos) {
+    float2 center_pos = float2(nx, ny) * h * 0.5;
+    float2 diff = pos - center_pos;
+    diff.y *= _aspectRatio;
+    float dist = length(diff);
+    float max_dist = nx * h * 0.5; 
+    return dist / max_dist;
+}
 
 //====================================================================
 RWStructuredBuffer<Particle> _Particles;
@@ -68,6 +101,11 @@ RWTexture2D<float> _Ap;
 RWTexture2D<float> _Precon;
 Texture2D<float> _TexA;
 Texture2D<float> _TexB;
+RWTexture2D<float2> _GridVel;
+
+AppendStructuredBuffer<uint> _DeadPoolAppend;    // DeadPool（初期化・消滅時用）
+ConsumeStructuredBuffer<uint> _DeadPoolConsume;  // DeadPool（生成時用）
+AppendStructuredBuffer<uint> _ActiveListAppend;  // Activeリスト（毎フレーム構築）
 
 groupshared int gs_dot[64]; // スレッドグループ内(8x8)の共有メモリ
 
@@ -140,11 +178,26 @@ void P2G(uint3 id : SV_DispatchThreadID)
     Particle p = _Particles[id.x];
     float2 pos = p.position;
     float2 vel = p.velocity;
-
-    // --- 共通の重み計算関数 (インライン化) ---
-    // u_f と 1.0-u_f を事前に計算して分岐を消す
+    float t = GetDistanceRatio(pos);
     
-    // --- VelX (u) --- 
+    // === Euler領域を超えた粒子はGridTypeのみ更新してreturn ===
+    int2 center_idx = (int2)floor(pos / h);
+
+    bool is_in_grid = all(center_idx >= 0 && center_idx < int2((int)nx, (int)ny));
+    
+    if (t > _eulerPos) {
+        if (is_in_grid) {
+            if (_GridType[center_idx] != 2) {
+                _GridType[center_idx] = 1;
+            }
+        }
+        return; 
+    }
+
+    // === LOD: flipPos～picPosで粒子の重さを減らしていく ===
+    float fadeFlipPic = saturate((_picPos - t) / (_picPos - _flipPos + 0.0001));
+
+    // === VelX の転送 ===
     float2 u_pos = float2(pos.x / h, pos.y / h - 0.5);
     int2 u_idx = (int2)floor(u_pos);
     float2 u_f = u_pos - (float2)u_idx;
@@ -156,17 +209,20 @@ void P2G(uint3 id : SV_DispatchThreadID)
         [unroll]
         for (int i = 0; i <= 1; i++) {
             int2 coord = u_idx + int2(i, j);
-            // 境界チェックは単純な比較演算で
-            if (all(coord >= 0) && coord.x <= nx && coord.y < ny) {
-                float weight = wX[i] * wY[j];
-                int uIndex = coord.x + coord.y * (nx + 1);
-                InterlockedAdd(_VelXBuffer[uIndex], (int)(vel.x * weight * SCALE));
-                InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE));
+            if (all(coord >= 0) && coord.x <= (int)nx && coord.y < (int)ny) {
+                float weight = wX[i] * wY[j] * fadeFlipPic;
+                uint uIndex = (uint)coord.x + (uint)coord.y * (nx + 1u);
+                // InterlockAddは整数しか使えないのでSCALE倍して整数で送る
+                // SCALEはNormalizeVelカーネルで分母分子で相殺
+                if(weight > 0.001f) { // 微小な重みは無視
+                    InterlockedAdd(_VelXBuffer[uIndex], (int)(vel.x * weight * SCALE));
+                    InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE));
+                }
             }
         }
     }
 
-    // --- VelY (v) ---
+    // === VelY の転送 ===
     float2 v_pos = float2(pos.x / h - 0.5, pos.y / h);
     int2 v_idx = (int2)floor(v_pos);
     float2 v_f = v_pos - (float2)v_idx;
@@ -178,16 +234,19 @@ void P2G(uint3 id : SV_DispatchThreadID)
         [unroll]
         for (int iv = 0; iv <= 1; iv++) {
             int2 coord = v_idx + int2(iv, jv);
-            if (all(coord >= 0) && coord.x < nx && coord.y <= ny) {
-                float weight = wvX[iv] * wvY[jv];
-                int vIndex = coord.x + coord.y * nx;
-                InterlockedAdd(_VelYBuffer[vIndex], (int)(vel.y * weight * SCALE));
-                InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE));
+            if (all(coord >= 0) && coord.x < (int)nx && coord.y <= (int)ny) {
+                float weight = wvX[iv] * wvY[jv] * fadeFlipPic;
+                uint vIndex = (uint)coord.x + (uint)coord.y * nx;
+                
+                if(weight > 0.001f) {
+                    InterlockedAdd(_VelYBuffer[vIndex], (int)(vel.y * weight * SCALE));
+                    InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE));
+                }
             }
         }
     }
 
-    // GridTypeの更新 (流体セルのみマーク)
+    // === GridTypeの更新 ===
     int2 center = (int2)floor(pos / h);
     // 壁でない場合のみ流体としてマーク
     if (_GridType[center] != 2) {
@@ -199,20 +258,18 @@ void P2G(uint3 id : SV_DispatchThreadID)
 void NormalizeVel(uint3 id : SV_DispatchThreadID)
 {
     // --- VelX の正規化 ---
-    // nx+1, ny の範囲をチェック
-    if (id.x <= (uint)nx && id.y < (uint)ny)
+    if (id.x <= nx && id.y < ny)
     {
-        int idx = id.x + id.y * (nx + 1);
+        uint idx = id.x + id.y * (nx + 1u);
         float sumVel = (float)_VelXBuffer[idx]; // まだ SCALE は掛けたまま
         float weight = (float)_WeightXBuffer[idx];
         
-        // SCALE は分母分子で相殺されるため、そのまま割ってOK
+        // SCALE は分母分子で相殺
         _VelX[id.xy] = (weight > 1e-6f) ? (sumVel / weight) : 0.0f;
     }
 
     // --- VelY の正規化 ---
-    // nx, ny+1 の範囲をチェック
-    if (id.x < (uint)nx && id.y <= (uint)ny)
+    if (id.x < nx && id.y <= ny)
     {
         int idy = id.x + id.y * nx;
         float sumVel = (float)_VelYBuffer[idy];
@@ -270,18 +327,56 @@ void Divergence(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= nx || id.y >= ny) return;
 
-    // Python版: du = u[ix+1, iy] - u[ix, iy]
+    // --- 1. テクスチャからの速度読み取り ---
+    // テクスチャは通常 0.0～1.0 ではなく物理値が入っている前提です
     float uL = _VelX[id.xy];
-    float uR = _VelX[id.xy + int2(1, 0)];
-    float vB = _VelY[id.xy]; // Down/Bottom
-    float vT = _VelY[id.xy + int2(0, 1)]; // Up/Top
+    float uR = _VelX[id.xy + uint2(1, 0)];
+    float vB = _VelY[id.xy];
+    float vT = _VelY[id.xy + uint2(0, 1)];
 
-    // b = -(rho * h / dt) * (du + dv)
     float div = (uR - uL) + (vT - vB);
-    _Divergence[id.xy] = -(rho * h / dt) * div;
+    float b = -(rho * h / dt) * div;
 
-    // fluid以外は常に0
-    if (_GridType[id.xy] != 1) {
+    // --- 2. 局所密度の取得 (RWIntBuffer から) ---
+    uint idxL = id.x + id.y * (nx + 1);
+    uint idxR = (id.x + 1) + id.y * (nx + 1);
+    uint idxB = id.x + id.y * nx;
+    uint idxT = id.x + (id.y + 1) * nx;
+
+    // 重みは Fixed-point なので SCALE で割る
+    float wL = (float)_WeightXBuffer[idxL] / SCALE;
+    float wR = (float)_WeightXBuffer[idxR] / SCALE;
+    float wB = (float)_WeightYBuffer[idxB] / SCALE;
+    float wT = (float)_WeightYBuffer[idxT] / SCALE;
+    
+    float currentWeight = (wL + wR + wB + wT) * 0.25;
+
+    // --- 3. 復元ポテンシャルの計算 ---
+    float2 cellPos = (float2(id.xy) + 0.5) * h;
+    float t = GetDistanceRatio(cellPos);
+    
+    // 全体の過不足
+    float recoveryFactor = ((float)_TargetCount - (float)_CurrentCount) / (float)_TargetCount;
+
+    if (_GridType[id.xy] == 1) 
+    {
+        _Divergence[id.xy] = b;
+    }
+    else if (t > _picPos && t <= _eulerPos) 
+    {
+        float zoneWeight = pow(saturate((t - _picPos) / (_eulerPos - _picPos + 1e-5)), 2.0);
+        
+        // 理想密度 1.0 に対する過不足
+        float localNeed = 1.0 - currentWeight;
+
+        // stiffness は粒子の戻り具合を見て 5.0 ～ 20.0 で調整
+        float stiffness = 10.0f;
+        
+        // 全体不足(recoveryFactor) と 局所不足(localNeed) を合わせた吸い込み
+        _Divergence[id.xy] = stiffness * (recoveryFactor + localNeed) * zoneWeight;
+    }
+    else 
+    {
         _Divergence[id.xy] = 0;
     }
 }
@@ -349,7 +444,7 @@ void ApplyA(uint3 id : SV_DispatchThreadID)
 
     [unroll]
     for (int i = 0; i < 4; i++) {
-        int2 neighbor = id.xy + offsets[i];
+        uint2 neighbor = id.xy + offsets[i];
         
         // 領域内かどうかの判定
         if (neighbor.x >= 0 && neighbor.x < nx && neighbor.y >= 0 && neighbor.y < ny) {
@@ -363,8 +458,7 @@ void ApplyA(uint3 id : SV_DispatchThreadID)
             }
             // type == 2 (Solid) の場合は、境界条件 ∂p/∂n = 0 より寄与は 0
         } else {
-            // グリッドの外は壁として扱う（FLIPの標準的な処理）
-            // 必要に応じてここでも result += d_center などを追加
+            // グリッドの外は壁として扱う
         }
     }
 
@@ -427,51 +521,47 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)particleCount) return;
     Particle p = _Particles[id.x];
-
-    // --- 1. 速度サンプリング (New/Old一括) ---
-    // 高速化のためサンプラーを埋め込み
     float2 pos = p.position;
+    float t = GetDistanceRatio(pos);
 
+    // すでに非アクティブな粒子は何もしない
+    if (p.active == 0) return;
+
+    // === LOD: flipPos～picPosの間でflipRatioを動的に変える ===
+    float fadeFlipPic = saturate((_picPos - t) / (_picPos - _flipPos + 0.0001));
+    float fadePicEuler = saturate((_eulerPos - t) / (_eulerPos - _picPos + 0.0001));
+    float dynamicFlipRatio = flipRatio * fadeFlipPic;
+
+    // === 速度サンプリング ===
     // --- VelX ---
     float2 u_pos = float2(pos.x / h, pos.y / h - 0.5);
     int2 u_idx = (int2)floor(u_pos);
     float2 u_f = u_pos - (float2)u_idx;
     u_idx = clamp(u_idx, 0, int2(nx - 1, ny - 1));
 
-    // New と Old を同時に 4点サンプリング
-    float4 u_vals_new = float4(_VelX[u_idx + int2(0,0)], _VelX[u_idx + int2(1,0)], 
-                            _VelX[u_idx + int2(0,1)], _VelX[u_idx + int2(1,1)]);
-    float4 u_vals_old = float4(_VelXOld[u_idx + int2(0,0)], _VelXOld[u_idx + int2(1,0)], 
-                            _VelXOld[u_idx + int2(0,1)], _VelXOld[u_idx + int2(1,1)]);
-
-    // 補間（New と Old の両方の速度を一度に決定）
-    float u_new = lerp(lerp(u_vals_new.x, u_vals_new.y, u_f.x), lerp(u_vals_new.z, u_vals_new.w, u_f.x), u_f.y);
-    float u_old = lerp(lerp(u_vals_old.x, u_vals_old.y, u_f.x), lerp(u_vals_old.z, u_vals_old.w, u_f.x), u_f.y);
-
+    float u_new = lerp(lerp(_VelX[u_idx + int2(0,0)], _VelX[u_idx + int2(1,0)], u_f.x), 
+                       lerp(_VelX[u_idx + int2(0,1)], _VelX[u_idx + int2(1,1)], u_f.x), u_f.y);
+    float u_old = lerp(lerp(_VelXOld[u_idx + int2(0,0)], _VelXOld[u_idx + int2(1,0)], u_f.x), 
+                       lerp(_VelXOld[u_idx + int2(0,1)], _VelXOld[u_idx + int2(1,1)], u_f.x), u_f.y);
     // --- VelY ---
     float2 v_pos = float2(pos.x / h - 0.5, pos.y / h);
     int2 v_idx = (int2)floor(v_pos);
     float2 v_f = v_pos - (float2)v_idx;
     v_idx = clamp(v_idx, 0, int2(nx - 1, ny - 1));
 
-    // New と Old を同時に 4点サンプリング
-    float4 v_vals_new = float4(_VelY[v_idx + int2(0,0)], _VelY[v_idx + int2(1,0)], 
-                            _VelY[v_idx + int2(0,1)], _VelY[v_idx + int2(1,1)]);
-    float4 v_vals_old = float4(_VelYOld[v_idx + int2(0,0)], _VelYOld[v_idx + int2(1,0)], 
-                            _VelYOld[v_idx + int2(0,1)], _VelYOld[v_idx + int2(1,1)]);
+    float v_new = lerp(lerp(_VelY[v_idx + int2(0,0)], _VelY[v_idx + int2(1,0)], v_f.x), 
+                       lerp(_VelY[v_idx + int2(0,1)], _VelY[v_idx + int2(1,1)], v_f.x), v_f.y);
+    float v_old = lerp(lerp(_VelYOld[v_idx + int2(0,0)], _VelYOld[v_idx + int2(1,0)], v_f.x), 
+                       lerp(_VelYOld[v_idx + int2(0,1)], _VelYOld[v_idx + int2(1,1)], v_f.x), v_f.y);
 
-    // 補間
-    float v_new = lerp(lerp(v_vals_new.x, v_vals_new.y, v_f.x), lerp(v_vals_new.z, v_vals_new.w, v_f.x), v_f.y);
-    float v_old = lerp(lerp(v_vals_old.x, v_vals_old.y, v_f.x), lerp(v_vals_old.z, v_vals_old.w, v_f.x), v_f.y);
-
-    // ---- velにまとめる ---
+    // === 速度の合成 ===
     float2 vel_new = float2(u_new, v_new);
     float2 vel_old = float2(u_old, v_old);
 
     float2 v_flip = p.velocity + (vel_new - vel_old);
-    float2 final_vel = lerp(vel_new, v_flip, flipRatio); // PIC/FLIP Blend
+    float2 final_vel = lerp(vel_new, v_flip, dynamicFlipRatio);
 
-    // --- 2. Sleep Check (Deep Water) ---
+    // === 動いてない粒子をSleep ===
     int2 center = (int2)floor(p.position / h);
     // 領域外チェックをまとめ、周囲に空気が無い(Deep)判定を効率化
     bool is_in_bounds = all(center > 0) && all(center < int2(nx - 1, ny - 1));
@@ -487,12 +577,12 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
             final_vel = float2(0, 0);
         }
     }
-    p.velocity = final_vel;
+    p.velocity = final_vel * (0.9 + 0.1 * fadePicEuler); // Euler領域に近づくほど減速
 
-    // --- 3. Advection ---
+    // === Advection ===
     p.position += p.velocity * dt;
 
-    // --- 4. 境界判定（Collision Resolution） ---
+    // === 境界判定 ===
         const float bounce = 0.1f;
         const float margin = 0.5f * h;
         
@@ -516,15 +606,37 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
             p.position.y = minY;
             if (p.velocity.y < 0) p.velocity.y *= -bounce;
         } 
-        // 天井：あえて clamp の外側（あるいは境界ギリギリ）で判定を回す
+        // 天井：張り付かないようclampの外側で反射
         else if (p.position.y > (ny - 2) * h - margin) {
             p.position.y = (ny - 2) * h - margin;
             if (p.velocity.y > 0) {
-                p.velocity.y *= -bounce; // これが「張り付きからの剥離」を助ける
+                p.velocity.y *= -bounce;
             }
         }
 
     _Particles[id.x] = p;
+
+    // === 消滅確率 P_death ===
+    // RecoveryFactor < 0 の時（粒子が多すぎる時）に活性化
+    float zoneWeight = pow(saturate((t - _picPos) / (_eulerPos - _picPos + 1e-5)), 2.0);
+    
+    float2 centerPos = float2(width, height) * 0.5;
+    float2 toCenter = normalize(p.position - centerPos);
+
+    float p_death = 0.0;
+    if (t > _eulerPos) {
+        p_death = 1.0; // 境界外は強制消滅
+    } else {
+        // 粒子が多すぎるほど死にやすく、かつ「外向きの流れ」がある時に死を加速させる
+        float outwardFlow = -dot(p.velocity, toCenter);
+        p_death = saturate(-_RecoveryFactor) * zoneWeight * 0.5;
+        p_death += saturate(outwardFlow) * zoneWeight * 0.3;
+    }
+
+    if (rand(p.position + _Time.x) < p_death) {
+        p.active = 2; // 遺品整理ステートへ
+        _Particles[id.x] = p;
+    }
 }
 
 // 共通内積カーネル
@@ -612,7 +724,7 @@ void MouseInteraction(uint3 id : SV_DispatchThreadID)
 
     float2 cellPos = float2(id.x * h + h * 0.5, id.y * h + h * 0.5);
     float d = distance(cellPos, _MousePos);
-    float radius = 0.15; 
+    float radius = 0.1; 
 
     if (d < radius)
     {
@@ -639,5 +751,135 @@ void MouseInteraction(uint3 id : SV_DispatchThreadID)
             _VelX[id.xy] += dir.x * force; 
             _VelY[id.xy] += dir.y * force;
         }
+    }
+}
+
+[numthreads(8, 8, 1)]
+void SpawnParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)nx || id.y >= (uint)ny) return;
+
+    float2 cellPos = (float2(id.xy) + 0.5) * h;
+    float t = GetDistanceRatio(cellPos);
+    if (t < _picPos || t > _eulerPos) return;
+
+    // --- 局所密度の取得 (RWIntBuffer) ---
+    uint idxL = id.x + id.y * (nx + 1);
+    uint idxR = (id.x + 1) + id.y * (nx + 1);
+    uint idxB = id.x + id.y * nx;
+    uint idxT = id.x + (id.y + 1) * nx;
+
+    float currentWeight = ((float)_WeightXBuffer[idxL] + (float)_WeightXBuffer[idxR] + 
+                           (float)_WeightYBuffer[idxB] + (float)_WeightYBuffer[idxT]) / (4.0 * SCALE);
+
+    // --- 速度の取得 (Texture2D) ---
+    float u = (_VelX[id.xy] + _VelX[id.xy + uint2(1, 0)]) * 0.5;
+    float v = (_VelY[id.xy] + _VelY[id.xy + uint2(0, 1)]) * 0.5;
+    float2 gridVel = float2(u, v);
+
+    // --- 生成ロジック ---
+    float recoveryFactor = ((float)_TargetCount - (float)_CurrentCount) / (float)_TargetCount;
+    float densityBrake = saturate(1.0 - currentWeight); 
+    float zoneWeight = pow(saturate((t - _picPos) / (_eulerPos - _picPos + 1e-5)), 2.0);
+
+    float2 centerPos = float2(nx, ny) * 0.5 * h;
+    float2 toCenter = normalize(centerPos - cellPos);
+    float inwardFlow = saturate(dot(gridVel, toCenter));
+
+    // 確率計算
+    float p_birth = (saturate(recoveryFactor) * zoneWeight * densityBrake * 0.5) 
+                  + (inwardFlow * zoneWeight * 0.3);
+
+    if (rand(cellPos + _Time.x) < p_birth) {
+        uint newIdx = _DeadPoolConsume.Consume();
+        if (newIdx < _maxParticles) {
+            float2 offset = float2(rand(cellPos + 0.13), rand(cellPos + 0.71)) - 0.5;
+            Particle newP;
+            newP.position = cellPos + offset * h;
+            newP.velocity = gridVel;
+            newP.active = 1;
+            newP.padding = 0;
+            _Particles[newIdx] = newP;
+        }
+    }
+}
+
+// 1. 最初の一回だけ実行：全インデックスをプールへ
+[numthreads(64, 1, 1)]
+void InitDeadPool(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)particleCount) return;
+    
+    _Particles[id.x].active = 0; // false -> 0
+    _DeadPoolAppend.Append(id.x);
+}
+
+// 2. 毎フレーム実行：生きている粒子のIDをリスト化
+[numthreads(64, 1, 1)]
+void CollectActiveList(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)particleCount) return;
+
+    if (_Particles[id.x].active == 1) { 
+        _ActiveListAppend.Append(id.x);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void InitAllParticles(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)particleCount) return;
+
+    // 1. まず全員を「死んでいる」状態としてプールへ送る
+    // (Counterのリセットが必要なので、C#側で SetCounterValue(0) を呼ぶこと)
+    _DeadPoolAppend.Append(id.x);
+
+    // 2. その中から _TargetCount 分だけをピックアップして「生存」させる
+    if (id.x < (uint)_TargetCount)
+    {
+        Particle p;
+        float2 noise = float2(rand(float2(id.x, 0.1)), rand(float2(id.x, 0.9)));
+        
+        // 配置範囲を少し広げて確認しやすくする（例：中央 60% 範囲）
+        p.position.x = width * (0.2 + noise.x * 0.6);
+        p.position.y = height * (0.1 + noise.y * 0.8);
+        p.velocity = float2(0, 0);
+        p.active = 1; 
+        p.padding = 0;
+        
+        _Particles[id.x] = p;
+    }
+    else
+    {
+        // 残りは完全に透明な場所へ
+        _Particles[id.x].active = 0;
+        _Particles[id.x].position = float2(-1000, -1000);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void TransferDeadVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _maxParticles) return; 
+
+    Particle p = _Particles[id.x];
+    
+    if (p.active == 2) 
+    {
+        // 遺品整理（速度の委譲）
+        int2 center = (int2)floor(p.position / h); 
+        if (all(center >= 0 && center < int2(nx, ny))) {
+            uint uIdx = (uint)center.x + (uint)center.y * (nx + 1);
+            uint vIdx = (uint)center.x + (uint)center.y * nx;
+            InterlockedAdd(_VelXBuffer[uIdx], (int)(p.velocity.x * SCALE));
+            InterlockedAdd(_VelYBuffer[vIdx], (int)(p.velocity.y * SCALE));
+            InterlockedAdd(_WeightXBuffer[uIdx], (int)(0.5f * SCALE)); 
+            InterlockedAdd(_WeightYBuffer[vIdx], (int)(0.5f * SCALE));
+        }
+        
+        p.active = 0;
+        p.position = float2(-1000, -1000); // 描画事故防止
+        _Particles[id.x] = p;
+        _DeadPoolAppend.Append(id.x);
     }
 }

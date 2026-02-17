@@ -1,0 +1,136 @@
+#pragma kernel InitWave
+#pragma kernel ComputeExplicit
+#pragma kernel JacobiSolve
+#pragma kernel UpdateState
+#pragma kernel MouseInteract
+
+struct State { float h; float u; };
+RWStructuredBuffer<State> _MainBuffer;
+RWStructuredBuffer<float> _b;
+RWStructuredBuffer<float> _x;
+RWStructuredBuffer<float> _xNew;
+
+int _Width;
+float _DT;
+float _DX;
+float _Alpha;
+float _MousePos;   // 0.0 ~ 1.0
+float _MouseRadius;
+float _MouseStrength;
+
+// --- 初期化 ---
+[numthreads(64,1,1)]
+void InitWave(uint id : SV_DispatchThreadID) {
+    if (id >= (uint)_Width) return;
+    float x = (float)id / _Width;
+    float d = x - 0.5;
+    // 初期水位を1.0（静止水面）+ ガウシアン
+    _MainBuffer[id].h = 1.0 + exp(-(d*d)/0.01) * 2.0; 
+    _MainBuffer[id].u = 0;
+}
+
+// --- 1. 陽的ステップ: 速度の仮更新 ---
+[numthreads(64,1,1)]
+void ComputeExplicit(uint id : SV_DispatchThreadID) {
+    if (id >= (uint)_Width) return;
+
+    float g = 9.8;
+    // 境界条件（簡易的な壁）
+    float h_i = _MainBuffer[id].h;
+    float h_im1 = (id > 0) ? _MainBuffer[id-1].h : h_i;
+
+    // 速度 u はセルの左境界にあると想定 (Staggered)
+    // u[id] は h[id-1] と h[id] の間の勾配で加速する
+    float dudt = -g * (h_i - h_im1) / _DX;
+    
+    // Helmholtz方程式の右辺: u* = u^n + dt * dudt
+    _b[id] = _MainBuffer[id].u + _DT * dudt;
+}
+
+// --- 2. 陰的ステップ: Boussinesq分散項 (I - alpha*Dxx)u_new = u* ---
+[numthreads(64,1,1)]
+void JacobiSolve(uint id : SV_DispatchThreadID) {
+    if (id >= (uint)_Width) return;
+
+    float invDX2 = 1.0 / (_DX * _DX);
+    float diag = 1.0 + 2.0 * _Alpha * invDX2;
+
+    float x_prev = (id > 0) ? _x[id-1] : 0.0;
+    float x_next = (id < (uint)_Width-1) ? _x[id+1] : 0.0;
+    
+    // ヤコビ反復: u_i = (u*_i + alpha * (u_{i+1} + u_{i-1})/dx^2) / (1 + 2*alpha/dx^2)
+    _xNew[id] = (_b[id] + _Alpha * (x_prev + x_next) * invDX2) / diag;
+}
+
+// --- 3. 最終更新: 水位の更新 (連続の式) ---
+[numthreads(64,1,1)]
+void UpdateState(uint id : SV_DispatchThreadID) {
+    if (id >= (uint)_Width) return;
+
+    // 計算された新しい速度を格納
+    float u_i = _x[id]; 
+    float u_ip1 = (id < (uint)_Width-1) ? _x[id+1] : 0.0;
+    _MainBuffer[id].u = u_i;
+
+    // 連続の式: dh/dt = - d(h*u)/dx
+    // セル中心の水位 h[id] は、左右の境界の速度(u[id], u[id+1])による流入出で決まる
+    // 水深 H は全水深(h)を使用
+    float h_i = _MainBuffer[id].h;
+    
+    // フラックス計算 (中心差分的なスタガード形式)
+    // idのセルの左境界速度がu_i、右境界速度がu_ip1
+    float div_u = (u_ip1 - u_i) / _DX;
+    
+    // 水位の更新 (dh = -dt * h * div(u))
+    // ※より厳密には移流項も必要ですが、波の伝播にはこれが支配的です
+    _MainBuffer[id].h = h_i - _DT * h_i * div_u;
+}
+
+[numthreads(64,1,1)]
+void MouseInteract(uint id : SV_DispatchThreadID)
+{
+    if (id >= (uint)_Width) return;
+
+    float x = (float)id / _Width;
+    float dist = abs(x - _MousePos);
+
+    if (dist < _MouseRadius)
+    {
+        // マウス位置の水位を盛り上げる（波を発生させる）
+        // ガウス分布的な重み付けで滑らかに
+        float force = exp(-(dist * dist) / (_MouseRadius * _MouseRadius * 0.5));
+        _MainBuffer[id].h += force * _MouseStrength;
+    }
+}
+
+// Coupling.compute
+#pragma kernel CalculateCoupling
+
+struct SWEState { float h; float u; };
+StructuredBuffer<SWEState> _SWEBuffer;
+RWStructuredBuffer<float> _FLIPBottomHeight; // FLIPが「これより下は計算しない」と参照する高さ
+
+float3 _CameraPos;
+float _MaxDistance;
+
+[numthreads(64,1,1)]
+void CalculateCoupling(uint id : SV_DispatchThreadID) {
+    if (id >= _Width) return;
+    
+    float h_swe = _SWEBuffer[id].h;
+    float u_swe = _SWEBuffer[id].u;
+    
+    // 1. フルード数計算
+    float Fr = abs(u_swe) / sqrt(9.8 * max(h_swe, 0.01));
+    
+    // 2. カメラ距離係数 (0.0=近距離, 1.0=遠距離)
+    float3 cellPos = float3(id * _DX, h_swe, 0);
+    float dist = distance(_CameraPos, cellPos);
+    float distFactor = saturate(dist / _MaxDistance);
+    
+    // 3. 割引率の決定 (例: 遠いほど、あるいは静かなほどSWEに任せる)
+    float discount = (1.0 - distFactor) * saturate(Fr * 2.0);
+    
+    // FLIPの底となる高さを決定
+    _FLIPBottomHeight[id] = h_swe * (1.0 - discount);
+}

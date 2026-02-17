@@ -1,44 +1,45 @@
-//====================================================================
 #pragma kernel ClearGrid
-#pragma kernel MarkCellTypes
 #pragma kernel P2G
-#pragma kernel NormalizeVelX
-#pragma kernel NormalizeVelY
+#pragma kernel NormalizeVel
 #pragma kernel AddGravity
 #pragma kernel ApplyBoundCond
 #pragma kernel Divergence
 #pragma kernel BuildDiag
+#pragma kernel InitCG
 #pragma kernel ApplyA
 #pragma kernel UpdatePR
 #pragma kernel UpdateD
 #pragma kernel Projection
 #pragma kernel G2P_Advection
-#pragma kernel DotProductGeneric
-#pragma kernel InitCG
-#pragma kernel DotProductPreconditioned
-#pragma kernel CalculateAlpha
-#pragma kernel CalculateBeta
-#pragma kernel ComputeInitialRTr
+#pragma kernel DotProduct
+#pragma kernel ManageCG //ComputeInitialRTr,CalculateAlpha,CalculateBeta
+#pragma kernel ComputeInitialResidual
+#pragma kernel MouseInteraction
 
 #define SCALE 10000.0f 
 #define DOT_SCALE 100000.0f
 
 //====================================================================
 int particleCount;
+int maxIter;
+int _UsePrecon; // 0: dot(texA,texB), 1: precon*dot(texA,texB),
+int _CGPhase; // 0: InitialRTr, 1: Alpha, 2: Beta
+int _MouseClick; // 0:なし, 1:引き寄せ, 2:反発
+
+uint nx;
+uint ny;
+
 float dt;
 float width;
 float height;
 float h;
-uint nx;
-uint ny;
-
 float rho;
 float gravity;
 float flipRatio;
-int maxIter; // floatからintへ
 float tolerance;
 float _Alpha;
 float _Beta;
+float2 _MousePos;
 
 struct Particle {
     float2 position;
@@ -66,6 +67,8 @@ RWTexture2D<float> _Ap;
 RWTexture2D<float> _Precon;
 Texture2D<float> _TexA;
 Texture2D<float> _TexB;
+
+groupshared int gs_dot[64]; // スレッドグループ内(8x8)の共有メモリ
 
 //====================================================================
 float2 SampleVelocity(float2 pos, RWTexture2D<float> vX, RWTexture2D<float> vY) {
@@ -95,42 +98,37 @@ float2 SampleVelocity(float2 pos, RWTexture2D<float> vX, RWTexture2D<float> vY) 
     return float2(u, v);
 }
 //====================================================================
-[numthreads(8,8,1)]
+[numthreads(8, 8, 1)]
 void ClearGrid(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x < nx && id.y < ny)
+    // 1. セルセンターベースのデータリセット (nx * ny)
+    if (id.x < (uint)nx && id.y < (uint)ny)
     {
         uint centerIdx = id.x + id.y * nx;
         _WeightXBuffer[centerIdx] = 0;
         _WeightYBuffer[centerIdx] = 0;
         _Divergence[id.xy] = 0;
         _Pressure[id.xy] = 0;
+
+        // --- MarkCellTypes の統合 ---
+        // 外枠なら Solid(2)、それ以外は Air(0)
+        bool is_boundary = (id.x == 0 || id.x == (uint)nx - 1 || id.y == 0 || id.y == (uint)ny - 1);
+        _GridType[id.xy] = is_boundary ? 2 : 0;
     }
 
-    if (id.x <= nx && id.y < ny)
+    // 2. VelX (nx+1 * ny) のリセット
+    if (id.x <= (uint)nx && id.y < (uint)ny)
     {
         uint uIdx = id.x + id.y * (nx + 1);
         _VelXBuffer[uIdx] = 0;
     }
 
-    if (id.x < nx && id.y <= ny)
+    // 3. VelY (nx * ny+1) のリセット
+    if (id.x < (uint)nx && id.y <= (uint)ny)
     {
         uint vIdx = id.x + id.y * nx;
         _VelYBuffer[vIdx] = 0;
     }
-}
-
-[numthreads(8, 8, 1)]
-void MarkCellTypes(uint3 id : SV_DispatchThreadID)
-{
-    // 範囲外アクセス防止
-    if (id.x >= nx || id.y >= ny) return;
-    int type = 0; // Air
-    if (id.x == 0 || id.x == nx - 1 || id.y == 0 || id.y == ny - 1)
-    {
-        type = 2; // Solid
-    }
-    _GridType[id.xy] = type;
 }
 
 [numthreads(64, 1, 1)]
@@ -142,29 +140,27 @@ void P2G(uint3 id : SV_DispatchThreadID)
     float2 pos = p.position;
     float2 vel = p.velocity;
 
-    // --- VelX (u) ---
+    // --- 共通の重み計算関数 (インライン化) ---
+    // u_f と 1.0-u_f を事前に計算して分岐を消す
+    
+    // --- VelX (u) --- 
     float2 u_pos = float2(pos.x / h, pos.y / h - 0.5);
     int2 u_idx = (int2)floor(u_pos);
     float2 u_f = u_pos - (float2)u_idx;
+    float wX[2] = { 1.0 - u_f.x, u_f.x };
+    float wY[2] = { 1.0 - u_f.y, u_f.y };
 
-    for (int iu = 0; iu <= 1; iu++) {
-        for (int ju = 0; ju <= 1; ju++) {
-            int2 coord = u_idx + int2(iu, ju);
-            if (coord.x >= 0 && coord.x <= (int)nx && coord.y >= 0 && coord.y < (int)ny) {
-                
-                // Python版のSolid判定ロジック:
-                // ix + ox > 0 and cell_type[ix + ox - 1, iy + oy] == 2
-                // ix + ox < nx and cell_type[ix + ox, iy + oy] == 2
-                bool is_solid = false;
-                if (coord.x > 0 && _GridType[int2(coord.x - 1, coord.y)] == 2) is_solid = true;
-                if (coord.x < (int)nx && _GridType[int2(coord.x, coord.y)] == 2) is_solid = true;
-
-                if (!is_solid) {
-                    float weight = (iu * u_f.x + (1 - iu) * (1 - u_f.x)) * (ju * u_f.y + (1 - ju) * (1 - u_f.y));
-                    int uIndex = coord.x + coord.y * (nx + 1);
-                    InterlockedAdd(_VelXBuffer[uIndex], (int)(vel.x * weight * SCALE));
-                    InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE)); // 専用ウェイト
-                }
+    [unroll]
+    for (int j = 0; j <= 1; j++) {
+        [unroll]
+        for (int i = 0; i <= 1; i++) {
+            int2 coord = u_idx + int2(i, j);
+            // 境界チェックは単純な比較演算で
+            if (all(coord >= 0) && coord.x <= nx && coord.y < ny) {
+                float weight = wX[i] * wY[j];
+                int uIndex = coord.x + coord.y * (nx + 1);
+                InterlockedAdd(_VelXBuffer[uIndex], (int)(vel.x * weight * SCALE));
+                InterlockedAdd(_WeightXBuffer[uIndex], (int)(weight * SCALE));
             }
         }
     }
@@ -173,50 +169,56 @@ void P2G(uint3 id : SV_DispatchThreadID)
     float2 v_pos = float2(pos.x / h - 0.5, pos.y / h);
     int2 v_idx = (int2)floor(v_pos);
     float2 v_f = v_pos - (float2)v_idx;
+    float wvX[2] = { 1.0 - v_f.x, v_f.x };
+    float wvY[2] = { 1.0 - v_f.y, v_f.y };
 
-    for (int iv = 0; iv <= 1; iv++) {
-        for (int jv = 0; jv <= 1; jv++) {
+    [unroll]
+    for (int jv = 0; jv <= 1; jv++) {
+        [unroll]
+        for (int iv = 0; iv <= 1; iv++) {
             int2 coord = v_idx + int2(iv, jv);
-            if (coord.x >= 0 && coord.x < (int)nx && coord.y >= 0 && coord.y <= (int)ny) {
-                
-                // Python版のv側にはSolid判定がないため、ここではそのまま加算
-                float weight = (iv * v_f.x + (1 - iv) * (1 - v_f.x)) * (jv * v_f.y + (1 - jv) * (1 - v_f.y));
+            if (all(coord >= 0) && coord.x < nx && coord.y <= ny) {
+                float weight = wvX[iv] * wvY[jv];
                 int vIndex = coord.x + coord.y * nx;
                 InterlockedAdd(_VelYBuffer[vIndex], (int)(vel.y * weight * SCALE));
-                InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE)); // 専用ウェイト
+                InterlockedAdd(_WeightYBuffer[vIndex], (int)(weight * SCALE));
             }
         }
     }
 
-    // GridTypeの更新
+    // GridTypeの更新 (流体セルのみマーク)
     int2 center = (int2)floor(pos / h);
-    if (center.x >= 0 && center.x < (int)nx && center.y >= 0 && center.y < (int)ny) {
+    // 壁でない場合のみ流体としてマーク
+    if (_GridType[center] != 2) {
         _GridType[center] = 1;
     }
 }
 
 [numthreads(8, 8, 1)]
-void NormalizeVelX(uint3 id : SV_DispatchThreadID)
+void NormalizeVel(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x > nx || id.y >= ny) return;
-    int idx = id.x + id.y * (nx + 1);
-    
-    float sumVel = (float)_VelXBuffer[idx] / SCALE;
-    float weight = (float)_WeightXBuffer[idx] / SCALE;
-    
-    _VelX[id.xy] = (weight > 1e-6f) ? (sumVel / weight) : 0.0f;
-}
+    // --- VelX の正規化 ---
+    // nx+1, ny の範囲をチェック
+    if (id.x <= (uint)nx && id.y < (uint)ny)
+    {
+        int idx = id.x + id.y * (nx + 1);
+        float sumVel = (float)_VelXBuffer[idx]; // まだ SCALE は掛けたまま
+        float weight = (float)_WeightXBuffer[idx];
+        
+        // SCALE は分母分子で相殺されるため、そのまま割ってOK
+        _VelX[id.xy] = (weight > 1e-6f) ? (sumVel / weight) : 0.0f;
+    }
 
-[numthreads(8, 8, 1)]
-void NormalizeVelY(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= nx || id.y > ny) return;
-    int idx = id.x + id.y * nx;
-    
-    float sumVel = (float)_VelYBuffer[idx] / SCALE;
-    float weight = (float)_WeightYBuffer[idx] / SCALE;
-    
-    _VelY[id.xy] = (weight > 1e-6f) ? (sumVel / weight) : 0.0f;
+    // --- VelY の正規化 ---
+    // nx, ny+1 の範囲をチェック
+    if (id.x < (uint)nx && id.y <= (uint)ny)
+    {
+        int idy = id.x + id.y * nx;
+        float sumVel = (float)_VelYBuffer[idy];
+        float weight = (float)_WeightYBuffer[idy];
+        
+        _VelY[id.xy] = (weight > 1e-6f) ? (sumVel / weight) : 0.0f;
+    }
 }
 
 // 重力付加
@@ -311,44 +313,60 @@ void BuildDiag(uint3 id : SV_DispatchThreadID)
     _Precon[id.xy] = (diag > 0) ? (1.0f / diag) : 0.0f;
 }
 
-[numthreads(8,8,1)]
+[numthreads(8, 8, 1)]
+void InitCG(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y >= ny) return;
+
+    // 圧力の初期値として前回の圧力を使用(空気に変わった場所は0)
+    if (_GridType[id.xy] != 1) {
+            _Pressure[id.xy] = 0;
+        }
+
+    // 残差はこの後 A*p を計算してから求めるので、クリアのみ
+    _Residual[id.xy] = 0.0f;
+    _SearchDir[id.xy] = 0.0f;
+    
+}
+
+[numthreads(8, 8, 1)]
 void ApplyA(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= nx || id.y >= ny)
-        return;
-    if (_GridType[id.xy] != 1)
-    {
+    if (id.x >= (uint)nx || id.y >= (uint)ny) return;
+    
+    // 流体セル以外は計算不要
+    if (_GridType[id.xy] != 1) {
         _Ap[id.xy] = 0;
         return;
     }
 
-    float center = _SearchDir[id.xy];
+    float d_center = _SearchDir[id.xy];
     float result = 0.0f;
 
-    // 左
-    if (id.x > 0)
-    {
-        if (_GridType[id.xy - int2(1,0)] != 2)
-            result += (center - _SearchDir[id.xy - int2(1,0)]);
+    // 近傍4方向のオフセット
+    const int2 offsets[4] = { int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
+
+    [unroll]
+    for (int i = 0; i < 4; i++) {
+        int2 neighbor = id.xy + offsets[i];
+        
+        // 領域内かどうかの判定
+        if (neighbor.x >= 0 && neighbor.x < nx && neighbor.y >= 0 && neighbor.y < ny) {
+            int type = _GridType[neighbor];
+            
+            if (type == 1) { // 隣が流体なら、ラプラシアン (center - neighbor)
+                result += d_center - _SearchDir[neighbor];
+            } 
+            else if (type == 0) { // 隣が空気(Air)なら、境界条件 p=0 より (center - 0)
+                result += d_center;
+            }
+            // type == 2 (Solid) の場合は、境界条件 ∂p/∂n = 0 より寄与は 0
+        } else {
+            // グリッドの外は壁として扱う（FLIPの標準的な処理）
+            // 必要に応じてここでも result += d_center などを追加
+        }
     }
-    // 右
-    if (id.x < nx-1)
-    {
-        if (_GridType[id.xy + int2(1,0)] != 2)
-            result += (center - _SearchDir[id.xy + int2(1,0)]);
-    }
-    // 下
-    if (id.y > 0)
-    {
-        if (_GridType[id.xy - int2(0,1)] != 2)
-            result += (center - _SearchDir[id.xy - int2(0,1)]);
-    }
-    // 上
-    if (id.y < ny-1)
-    {
-        if (_GridType[id.xy + int2(0,1)] != 2)
-            result += (center - _SearchDir[id.xy + int2(0,1)]);
-    }
+
     _Ap[id.xy] = result;
 }
 
@@ -373,13 +391,6 @@ void UpdateD(uint3 id : SV_DispatchThreadID)
     // z = r * precon
     float z = _Residual[id.xy] * _Precon[id.xy];
     _SearchDir[id.xy] = z + beta * _SearchDir[id.xy];
-}
-
-// 初期値を格納するだけの小さなカーネル
-[numthreads(1, 1, 1)]
-void ComputeInitialRTr(uint3 id : SV_DispatchThreadID)
-{
-    _CGVars[0] = (float)_DotResult[0] / DOT_SCALE;
 }
 
 [numthreads(8, 8, 1)]
@@ -416,151 +427,216 @@ void G2P_Advection(uint3 id : SV_DispatchThreadID)
     if (id.x >= (uint)particleCount) return;
     Particle p = _Particles[id.x];
 
-    // --- G2P Step ---
-    float2 v_new = SampleVelocity(p.position, _VelX, _VelY);
-    float2 v_old = SampleVelocity(p.position, _VelXOld, _VelYOld);
+    // --- 1. 速度サンプリング (New/Old一括) ---
+    // 高速化のためサンプラーを埋め込み
+    float2 pos = p.position;
 
-    float2 v_flip = p.velocity + (v_new - v_old);
-    float2 v_pic = v_new;
-    float2 final_vel = lerp(v_pic, v_flip, flipRatio);
+    // --- VelX ---
+    float2 u_pos = float2(pos.x / h, pos.y / h - 0.5);
+    int2 u_idx = (int2)floor(u_pos);
+    float2 u_f = u_pos - (float2)u_idx;
+    u_idx = clamp(u_idx, 0, int2(nx - 1, ny - 1));
 
-    // --- Sleep & Deep Check ---
+    // New と Old を同時に 4点サンプリング
+    float4 u_vals_new = float4(_VelX[u_idx + int2(0,0)], _VelX[u_idx + int2(1,0)], 
+                            _VelX[u_idx + int2(0,1)], _VelX[u_idx + int2(1,1)]);
+    float4 u_vals_old = float4(_VelXOld[u_idx + int2(0,0)], _VelXOld[u_idx + int2(1,0)], 
+                            _VelXOld[u_idx + int2(0,1)], _VelXOld[u_idx + int2(1,1)]);
+
+    // 補間（New と Old の両方の速度を一度に決定）
+    float u_new = lerp(lerp(u_vals_new.x, u_vals_new.y, u_f.x), lerp(u_vals_new.z, u_vals_new.w, u_f.x), u_f.y);
+    float u_old = lerp(lerp(u_vals_old.x, u_vals_old.y, u_f.x), lerp(u_vals_old.z, u_vals_old.w, u_f.x), u_f.y);
+
+    // --- VelY ---
+    float2 v_pos = float2(pos.x / h - 0.5, pos.y / h);
+    int2 v_idx = (int2)floor(v_pos);
+    float2 v_f = v_pos - (float2)v_idx;
+    v_idx = clamp(v_idx, 0, int2(nx - 1, ny - 1));
+
+    // New と Old を同時に 4点サンプリング
+    float4 v_vals_new = float4(_VelY[v_idx + int2(0,0)], _VelY[v_idx + int2(1,0)], 
+                            _VelY[v_idx + int2(0,1)], _VelY[v_idx + int2(1,1)]);
+    float4 v_vals_old = float4(_VelYOld[v_idx + int2(0,0)], _VelYOld[v_idx + int2(1,0)], 
+                            _VelYOld[v_idx + int2(0,1)], _VelYOld[v_idx + int2(1,1)]);
+
+    // 補間
+    float v_new = lerp(lerp(v_vals_new.x, v_vals_new.y, v_f.x), lerp(v_vals_new.z, v_vals_new.w, v_f.x), v_f.y);
+    float v_old = lerp(lerp(v_vals_old.x, v_vals_old.y, v_f.x), lerp(v_vals_old.z, v_vals_old.w, v_f.x), v_f.y);
+
+    // ---- velにまとめる ---
+    float2 vel_new = float2(u_new, v_new);
+    float2 vel_old = float2(u_old, v_old);
+
+    float2 v_flip = p.velocity + (vel_new - vel_old);
+    float2 final_vel = lerp(vel_new, v_flip, flipRatio); // PIC/FLIP Blend
+
+    // --- 2. Sleep Check (Deep Water) ---
     int2 center = (int2)floor(p.position / h);
-    bool is_deep = true;
-    if (center.x > 0 && center.x < (int)nx - 1 && center.y > 0 && center.y < (int)ny - 1) {
-        // 周囲4マスにAir(0)があれば Deep ではない
-        if (_GridType[center + int2(1, 0)] == 0 || _GridType[center - int2(1, 0)] == 0 ||
-            _GridType[center + int2(0, 1)] == 0 || _GridType[center - int2(0, 1)] == 0) {
-            is_deep = false;
+    // 領域外チェックをまとめ、周囲に空気が無い(Deep)判定を効率化
+    bool is_in_bounds = all(center > 0) && all(center < int2(nx - 1, ny - 1));
+    
+    if (is_in_bounds) {
+        bool has_air = (_GridType[center + int2(1, 0)] == 0) || 
+                       (_GridType[center - int2(1, 0)] == 0) ||
+                       (_GridType[center + int2(0, 1)] == 0) || 
+                       (_GridType[center - int2(0, 1)] == 0);
+        
+        // 速度が極低速かつ周囲に空気がなければ静止（安定化）
+        if (!has_air && dot(final_vel, final_vel) < 0.0004f) { // speed < 0.02f
+            final_vel = float2(0, 0);
         }
-    } else {
-        is_deep = false;
-    }
-
-    float speed = length(final_vel);
-    bool sleep = (speed < 0.02f) && is_deep;
-
-    if (sleep) {
-        final_vel = float2(0, 0);
     }
     p.velocity = final_vel;
 
-    // --- Advection Step ---
+    // --- 3. Advection ---
     p.position += p.velocity * dt;
 
-    // 境界クランプ
-    float margin = 0.5f * h;
-    p.position.x = clamp(p.position.x, 1 * h + margin, (nx - 1) * h - margin);
-    p.position.y = clamp(p.position.y, 1 * h + margin, (ny - 1) * h - margin);
+    // --- 4. 境界判定（Collision Resolution） ---
+        const float bounce = 0.1f;
+        const float margin = 0.5f * h;
+        
+        // 計算用の境界値
+        float minX = 1.0f * h + margin;
+        float maxX = (nx - 1) * h - margin;
+        float minY = 1.0f * h + margin;
+        float maxY = (ny - 1) * h - margin; // 天井（これより上が反射ゾーン）
 
-    if (p.position.y < 1 * h + margin) {
-        p.position.y = h + margin;
-        // 地面に触れた瞬間に少しだけ上向きの速度を与える
-        if (p.velocity.y < 0) {
-            p.velocity.y *= -0.1f; // 反発係数
+        // X軸（壁）
+        if (p.position.x < minX) {
+            p.position.x = minX;
+            if (p.velocity.x < 0) p.velocity.x *= -bounce;
+        } else if (p.position.x > maxX) {
+            p.position.x = maxX;
+            if (p.velocity.x > 0) p.velocity.x *= -bounce;
         }
-    }
-    //天井に張り付かないよう、クランプより下で反発させる
-    if (p.position.y > (ny - 2) * h - margin) {
-        p.position.y = (ny - 2) * h - margin;
-        if (p.velocity.y > 0) {
-            p.velocity.y *= -0.1f; 
+
+        // Y軸（床・天井）
+        if (p.position.y < minY) {
+            p.position.y = minY;
+            if (p.velocity.y < 0) p.velocity.y *= -bounce;
+        } 
+        // 天井：あえて clamp の外側（あるいは境界ギリギリ）で判定を回す
+        else if (p.position.y > (ny - 2) * h - margin) {
+            p.position.y = (ny - 2) * h - margin;
+            if (p.velocity.y > 0) {
+                p.velocity.y *= -bounce; // これが「張り付きからの剥離」を助ける
+            }
         }
-    }
-    if (p.position.x < 1 * h + margin) {
-        p.position.x = 1 * h + margin;
-        if (p.velocity.x < 0) {
-            p.velocity.x *= -0.1f; 
-        }
-    }
-    if (p.position.x > (ny - 1) * h - margin) {
-        p.position.y = (ny - 1) * h - margin;
-        if (p.velocity.x > 0) {
-            p.velocity.x *= -0.1f; 
-        }
-    }
 
     _Particles[id.x] = p;
 }
 
+// 共通内積カーネル
 [numthreads(8, 8, 1)]
-void DotProductGeneric(uint3 id : SV_DispatchThreadID)
+void DotProduct(
+    uint3 id : SV_DispatchThreadID,
+    uint groupIndex : SV_GroupIndex)
 {
-    if (id.x < nx && id.y < ny && _GridType[id.xy] == 1) {
-        int dot = (int)(_TexA[id.xy] * _TexB[id.xy] * DOT_SCALE);
-        InterlockedAdd(_DotResult[0], dot);
+    float val = 0.0f;
+    if (id.x < (uint)nx && id.y < (uint)ny && _GridType[id.xy] == 1) {
+        // デフォルトは A * B
+        val = _TexA[id.xy] * _TexB[id.xy];
+        
+        // もし前処理(Precon)が必要なモードなら、さらにPreconを掛ける
+        if (_UsePrecon) {
+            val *= _Precon[id.xy];
+        }
+    }
+
+    gs_dot[groupIndex] = (int)(val * DOT_SCALE);
+    GroupMemoryBarrierWithGroupSync();
+
+    // 4. 並列リダクション (グループ内の64個の値を1つにまとめる)
+    // 64 -> 32 -> 16 -> 8 -> 4 -> 2 -> 1 と半分ずつ足していく
+    [unroll]
+    for (uint s = 32; s > 0; s >>= 1) {
+        if (groupIndex < s) {
+            gs_dot[groupIndex] += gs_dot[groupIndex + s];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // 5. グループの代表(index 0)だけがメインメモリに加算
+    if (groupIndex == 0) {
+        InterlockedAdd(_DotResult[0], gs_dot[0]);
     }
 }
 
-[numthreads(8, 8, 1)]
-void InitCG(uint3 id : SV_DispatchThreadID)
+[numthreads(1, 1, 1)]
+void ManageCG(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= nx || id.y >= ny) return;
+    float dot = (float)_DotResult[0] / DOT_SCALE;
 
-    // 圧力の初期値
-    _Pressure[id.xy] = 0;
-
-    if (_GridType[id.xy] == 1) // Fluidセルのみ
+    if (_CGPhase == 0) // InitialRTr
     {
-        // 初期残差 r = b - Ap (初期圧力が0なら r = b)
-        // ここでは Divergence をそのまま残差としてセット
-        float r = _Divergence[id.xy];
-        _Residual[id.xy] = r;
-
-        // 初期探索方向 d = M^-1 * r (Preconを適用)
-        _SearchDir[id.xy] = r * _Precon[id.xy];
+        _CGVars[0] = dot; // rTr (Initial)
     }
-    else
+    else if (_CGPhase == 1) // CalculateAlpha
     {
-        _Residual[id.xy] = 0;
-        _SearchDir[id.xy] = 0;
+        float rTr = _CGVars[0];
+        float dAd = dot;
+        _CGVars[1] = dAd;
+        _CGVars[2] = (abs(dAd) > 1e-15f) ? (rTr / dAd) : 0.0f; // alpha
     }
-    
-    // Apバッファも一応クリア
-    _Ap[id.xy] = 0;
+    else if (_CGPhase == 2) // CalculateBeta
+    {
+        float rTrNew = dot;
+        float rTrOld = _CGVars[0];
+        _CGVars[3] = rTrNew / (rTrOld + 1e-15f); // beta
+        _CGVars[4] = rTrOld;
+        _CGVars[0] = rTrNew; // rTr_old を更新
+    }
+
+    // 次の計算のためにドット積バッファをリセット
+    _DotResult[0] = 0;
 }
 
-// 前処理付き内積専用カーネル
 [numthreads(8, 8, 1)]
-void DotProductPreconditioned(uint3 id : SV_DispatchThreadID)
+void ComputeInitialResidual(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= nx || id.y >= ny || _GridType[id.xy] != 1) return;
 
-    float r = _Residual[id.xy];
-    float minv = _Precon[id.xy];
-    
-    // Python版 delta_new = np.sum(r * z) 
-    // z = r * minv なので、r * r * minv を加算する
-    float val = r * r * minv;
+    // r = b - Ap
+    // _Divergence が b, _Ap が今計算した A*p
+    float r = _Divergence[id.xy] - _Ap[id.xy];
+    _Residual[id.xy] = r;
 
-    InterlockedAdd(_DotResult[0], (int)(val * DOT_SCALE));
+    _SearchDir[id.xy] = r * _Precon[id.xy];
 }
 
-[numthreads(1, 1, 1)]
-void CalculateAlpha(uint3 id : SV_DispatchThreadID) {
-    float rTr = _CGVars[0]; 
-    float dAd = (float)_DotResult[0] / DOT_SCALE; 
-    
-    _CGVars[1] = dAd;
-    
-    // ガードを極めて強くする
-    // dAdが少しでも怪しければ alpha を 0 にしてそのループを無効化する
-    if (dAd > 1e-15f) {
-        _CGVars[2] = rTr / dAd;
-    } else {
-        _CGVars[2] = 0.0f; 
+[numthreads(8, 8, 1)]
+void MouseInteraction(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= nx || id.y >= ny || _MouseClick == 0) return;
+
+    float2 cellPos = float2(id.x * h + h * 0.5, id.y * h + h * 0.5);
+    float d = distance(cellPos, _MousePos);
+    float radius = 0.3; 
+
+    if (d < radius)
+    {
+        // ゼロ除算回避
+        float safeD = max(d, 0.0001);
+        float2 dir = (cellPos - _MousePos) / safeD;
+        float force = (1.0 - d / radius) * 15.0; // 速度への影響度
+
+        if (_MouseClick == 1) 
+        {
+            // 左クリック：かき混ぜ（壁にする）
+            _GridType[id.xy] = 2;
+            
+            // 壁が動いているような効果を出すため、少し速度を乗せる
+            _VelX[id.xy] = dir.x * force;
+            _VelY[id.xy] = dir.y * force;
+        }
+        else if (_MouseClick == 2) 
+        {
+            // 右クリック：湧き出し（流体にする）
+            _GridType[id.xy] = 1;
+            
+            // 中心から外側へ強く押し出す
+            _VelX[id.xy] += dir.x * force; 
+            _VelY[id.xy] += dir.y * force;
+        }
     }
-
-    _DotResult[0] = 0; // ここでリセット
-}
-
-[numthreads(1, 1, 1)]
-void CalculateBeta(uint3 id : SV_DispatchThreadID) {
-    float rTrNew = (float)_DotResult[0] / DOT_SCALE;
-    float rTrOld = _CGVars[0];
-    
-    _CGVars[3] = rTrNew / (rTrOld + 1e-10f); // betaを計算
-    _CGVars[4] = rTrOld; // 前の値をバックアップ
-    _CGVars[0] = rTrNew; // 新しいrTrを保存
-    _DotResult[0] = 0;
 }

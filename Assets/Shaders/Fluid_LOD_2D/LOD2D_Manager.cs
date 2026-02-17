@@ -4,69 +4,76 @@ public class LOD2DManager : MonoBehaviour
 {
     public ComputeShader compute;
     public Material displayMaterial;
+    public MeshRenderer backgroundRenderer;
 
     const float dt = 0.01f;
-    float width,height;
-    int nx,ny;
-    const int RES = 64; // 長さ1.0fあたりのセル数。2^nにする。
+    float width, height; //テクスチャのスケールを取得する
+    const int RES = 32; // 長さ1.0fあたりのセル数
+    int nx, ny; // セル数 nx = (int)(RES * width)
+    float aspect; // アス比 (float)ny / (float)nx
     const float h = 1.0f / (float)RES; // 1セルの幅
     const float gravity = -9.8f;
-    const float flipRatio = 0.99f;
+    const float flipRatio = 0.99f; //最大値
     const float rho = 1.0f; //密度
-    const int PARTICLES = 100000;
+    const int PARTICLES = 100000; //平衡時の粒子数
     const int maxIter = 15;
     const float tolerance = 1e-9f;
-    const int iteration = 32;
+    const int iteration = 20;
+    const float flipPos = 0.2f; //画面中央から画面端までの長さを1としたときの割合
+    const float picPos = 0.4f;
+    const float eulerPos = 0.6f; 
+    const float swePos = 0.8f; 
+    const float fftPos = 0.9f; 
+    int[] countArray;
+    int currentCount;
+    float recoveryFactor; //粒子の過不足　-1.0～1.0
+
+    // 0～flipPos: FLIP
+    // flipPos～picPos: FLIP/PIC
+    // picPos～eulerPos: PIC/Euler
+    // eulerPos～swePos: Euler/SWE
+    // swePos～fftPos: SWE/FFT
+    // fftPos～: FFT
 
     struct Particle
     {
         public Vector2 position;
         public Vector2 velocity;
+        public int active; // boolの代わりにintを使用 (0: false, 1: true)
+        public int padding;         // 4 bytes (パディング)
     }
 
-    struct MGLevel {
-        public RenderTexture pressure;
-        public RenderTexture divergence; // 粗い階層では「b」として機能
-        public RenderTexture type;
-        public RenderTexture residual;
-        public int width;
-        public int height;
-    }
-
-    MGLevel[] mgLevels;
-
-    ComputeBuffer particleBuf,velXBuf,velYBuf,weightXBuf,weightYBuf,dotBuf,cgVarsBuf;
+    ComputeBuffer particleBuf,velXBuf,velYBuf,weightXBuf,weightYBuf,dotBuf,cgVarsBuf,countBuf,activeListBuf,deadPoolBuf;
     RenderTexture velXTex,velYTex,velXOldTex,velYOldTex,presTex,divTex,resTex,dirTex,apTex,preconTex,typeTex;
 
     void Start()
     {
+        // 1. パラメータ計算
         width = transform.localScale.x;
         height = transform.localScale.y;
-
         nx = Mathf.RoundToInt(width * RES);
         ny = Mathf.RoundToInt(height * RES);
+        aspect = (float)ny / (float)nx;
 
-        // --- 1. StructuredBuffer の生成 ---
-        // 粒子バッファ
-        particleBuf = new ComputeBuffer(
-            PARTICLES,
-            16,
-            ComputeBufferType.Structured
-        );
+        // 2. バッファ生成
+        int maxParticles = PARTICLES * 2;
 
-        // int型のアトミック加算用バッファ (SCALE倍して保存するため)
-        // VelX は (nx + 1) * ny
+        particleBuf = new ComputeBuffer(maxParticles, 24, ComputeBufferType.Structured);
+
+        activeListBuf = new ComputeBuffer(maxParticles, sizeof(int), ComputeBufferType.Append);
+        deadPoolBuf = new ComputeBuffer(maxParticles, sizeof(int), ComputeBufferType.Append);
+        countBuf = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Raw);
+        countArray = new int[1];
+
+        // グリッド用バッファ生成
         velXBuf = new ComputeBuffer((nx + 1) * ny, sizeof(int));
-        // VelY は nx * (ny + 1)
         velYBuf = new ComputeBuffer(nx * (ny + 1), sizeof(int));
-        // Weight / DotResult
-        weightXBuf = new ComputeBuffer(nx * ny, sizeof(int));
-        weightYBuf = new ComputeBuffer(nx * ny, sizeof(int));
+        weightXBuf = new ComputeBuffer((nx + 1) * ny, sizeof(int));
+        weightYBuf = new ComputeBuffer(nx * (ny + 1), sizeof(int));
         dotBuf = new ComputeBuffer(1, sizeof(int));
-        //alpha, beta, rTr, rTrOld, dAd
         cgVarsBuf = new ComputeBuffer(5, sizeof(float));
 
-        // --- 2. RenderTexture (Gridデータ) の生成 ---
+        // RenderTexture (Gridデータ) の生成
         RenderTexture CreateGridTex(int w, int h, RenderTextureFormat format) {
             RenderTexture tex = new RenderTexture(w, h, 0, format);
             tex.enableRandomWrite = true;
@@ -75,75 +82,39 @@ public class LOD2DManager : MonoBehaviour
             return tex;
         }
 
-        // 速度 (float)
+        // 3. RenderTexture生成
         velXTex = CreateGridTex(nx + 1, ny, RenderTextureFormat.RFloat);
         velYTex = CreateGridTex(nx, ny + 1, RenderTextureFormat.RFloat);
         velXOldTex = CreateGridTex(nx + 1, ny, RenderTextureFormat.RFloat);
         velYOldTex = CreateGridTex(nx, ny + 1, RenderTextureFormat.RFloat);
-
-        // 圧力・発散・CG用バッファ (セル中心)
         presTex = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
         divTex  = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
         resTex  = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
         dirTex  = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
         apTex   = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
         preconTex = CreateGridTex(nx, ny, RenderTextureFormat.RFloat);
-
-        // セルタイプ (int)
         typeTex = CreateGridTex(nx, ny, RenderTextureFormat.RInt);
 
-        // --- 3. 粒子の初期配置 ---
-        InitParticles();
-    }
+        displayMaterial = backgroundRenderer.material;
 
-    void InitMultiGrid(int baseW, int baseH) {
-        // 階層数を計算（例：最小サイズが4x4になるまで）
-        int numLevels = Mathf.FloorToInt(Mathf.Log(Mathf.Min(baseW, baseH), 2)) - 1;
-        
-        // 配列の初期化
-        mgLevels = new MGLevel[numLevels];
+        // DeadPoolのカウンタをリセット
+        deadPoolBuf.SetCounterValue(0);
 
-        int curW = baseW;
-        int curH = baseH;
+        // カーネル検索と実行
+        int kInitAll = compute.FindKernel("InitAllParticles");
+        compute.SetBuffer(kInitAll, "_Particles", particleBuf);
+        compute.SetBuffer(kInitAll, "_DeadPoolAppend", deadPoolBuf);
 
-        for (int i = 0; i < numLevels; i++) {
-            mgLevels[i] = new MGLevel();
-            mgLevels[i].width = curW;
-            mgLevels[i].height = curH;
+        // maxParticles 分回す
+        int threadGroups = Mathf.CeilToInt((float)maxParticles / 64f);
+        compute.Dispatch(kInitAll, threadGroups, 1, 1);
 
-            // 各レベルのテクスチャを作成
-            mgLevels[i].pressure = CreateRT(curW, curH, RenderTextureFormat.RFloat);
-            mgLevels[i].divergence = CreateRT(curW, curH, RenderTextureFormat.RFloat);
-            mgLevels[i].type = CreateRT(curW, curH, RenderTextureFormat.RInt);
-            mgLevels[i].residual = CreateRT(curW, curH, RenderTextureFormat.RFloat);
-
-            // 次のレベルは解像度半分
-            curW /= 2;
-            curH /= 2;
-        }
-    }
-
-    RenderTexture CreateRT(int w, int h, RenderTextureFormat fmt) {
-        RenderTexture rt = new RenderTexture(w, h, 0, fmt);
-        rt.enableRandomWrite = true;
-        rt.filterMode = FilterMode.Point; // 圧力量なので補完しない（重要）
-        rt.Create();
-        return rt;
-    }
-
-    void InitParticles()
-    {
-        Particle[] p = new Particle[PARTICLES];
-        for (int i = 0; i < PARTICLES; i++)
-        {
-            p[i].position = new Vector2(width/2, height/2) + Random.insideUnitCircle * 0.4f;
-            p[i].velocity = Vector2.zero;
-        }
-        particleBuf.SetData(p);
+        currentCount = PARTICLES;
     }
 
     void Update()
     {
+        recoveryFactor = ((float)PARTICLES - (float)currentCount) / (float)PARTICLES;
 
         // グループ数の計算
         int threadGroups = Mathf.CeilToInt((float)PARTICLES / 64f);
@@ -157,6 +128,7 @@ public class LOD2DManager : MonoBehaviour
         compute.SetFloat("h", h);
         compute.SetInt("nx", nx);
         compute.SetInt("ny", ny);
+        compute.SetInt("maxParticles", PARTICLES * 2);
         compute.SetInt("particleCount", PARTICLES);
         compute.SetFloat("width", width);
         compute.SetFloat("height", height);
@@ -165,6 +137,18 @@ public class LOD2DManager : MonoBehaviour
         compute.SetFloat("flipRatio", flipRatio);
         compute.SetInt("maxIter", maxIter);
         compute.SetFloat("tolerance", tolerance);
+        compute.SetFloat("_flipPos", flipPos);
+        compute.SetFloat("_picPos", picPos);
+        compute.SetFloat("_eulerPos", eulerPos);
+        compute.SetFloat("_swePos", swePos);
+        compute.SetFloat("_fftPos", fftPos);
+        compute.SetInt("_TargetCount",PARTICLES);
+        compute.SetFloat("_aspectRatio", aspect);
+        compute.SetFloat("_Time", Time.time);
+        compute.SetFloat("_RecoveryFactor", recoveryFactor);
+
+        activeListBuf.SetCounterValue(0);
+        compute.SetInt("_CurrentCount", currentCount);
 
         // 1. Grid Clear & Mark Cell Types
         int kCla = compute.FindKernel("ClearGrid");
@@ -240,6 +224,8 @@ public class LOD2DManager : MonoBehaviour
         int kDiv = compute.FindKernel("Divergence");
         compute.SetTexture(kDiv, "_VelX", velXTex);
         compute.SetTexture(kDiv, "_VelY", velYTex);
+        compute.SetBuffer(kDiv, "_WeightXBuffer", weightXBuf);
+        compute.SetBuffer(kDiv, "_WeightYBuffer", weightYBuf);
         compute.SetTexture(kDiv, "_Divergence", divTex);
         compute.SetTexture(kDiv, "_GridType", typeTex);
         compute.Dispatch(kDiv, groupVelX, groupVelY, 1);
@@ -269,9 +255,42 @@ public class LOD2DManager : MonoBehaviour
         compute.SetTexture(kG2PAdv, "_VelYOld", velYOldTex);
         compute.SetTexture(kG2PAdv, "_GridType", typeTex);
         compute.Dispatch(kG2PAdv, threadGroups, 1, 1);
+
+        // 速度の遺品整理
+        int kDeadVel = compute.FindKernel("TransferDeadVelocity");
+        compute.SetBuffer(kDeadVel, "_VelXBuffer", velXBuf);
+        compute.SetBuffer(kDeadVel, "_VelYBuffer", velYBuf);
+        compute.SetBuffer(kDeadVel, "_WeightXBuffer", weightXBuf);
+        compute.SetBuffer(kDeadVel, "_WeightYBuffer", weightYBuf);
+        compute.SetBuffer(kDeadVel, "_Particles", particleBuf);
+        compute.SetBuffer(kDeadVel, "_DeadPoolAppend", deadPoolBuf);
+        compute.Dispatch(kDeadVel, groupX, groupY, 1);
         
+        // --- 11. 補充（Spawn） ---
+        // 前フレームの currentCount に基づき、足りなければ補充
+        int kSpawn = compute.FindKernel("SpawnParticles");
+        compute.SetBuffer(kSpawn, "_Particles", particleBuf);
+        compute.SetTexture(kSpawn, "_GridType", typeTex);
+        compute.SetTexture(kSpawn, "_VelX", velXTex);
+        compute.SetTexture(kSpawn, "_VelY", velYTex);
+        compute.SetBuffer(kSpawn, "_WeightXBuffer", weightXBuf);
+        compute.SetBuffer(kSpawn, "_WeightYBuffer", weightYBuf);
+        compute.SetBuffer(kSpawn, "_DeadPoolConsume", deadPoolBuf);
+        compute.Dispatch(kSpawn, groupX, groupY, 1);
+
+        // --- 12. アクティブリストの構築 (Collect) ---
+        // 生き残った粒子と新しく生まれた粒子のIDをリスト化
+        int kCollect = compute.FindKernel("CollectActiveList");
+        compute.SetBuffer(kCollect, "_Particles", particleBuf);
+        compute.SetTexture(kCollect, "_GridType", typeTex);
+        compute.SetBuffer(kCollect, "_ActiveListAppend", activeListBuf);
+        compute.Dispatch(kCollect, threadGroups, 1, 1);
+
+        // --- 13. カウントの取得 (次フレーム用) ---
+        ComputeBuffer.CopyCount(activeListBuf, countBuf, 0);
+        countBuf.GetData(countArray);
+        currentCount = countArray[0];
     }
-    
 
     void SolvePressure(int groupX, int groupY)
     {
@@ -383,22 +402,28 @@ public class LOD2DManager : MonoBehaviour
 
     void OnRenderObject()
     {
+        if (particleBuf == null || displayMaterial == null) return;
+
+        // 値のセット（Pass0, Pass1共通）
         displayMaterial.SetFloat("_width", width);
         displayMaterial.SetFloat("_height", height);
+        displayMaterial.SetFloat("_flipPos", flipPos);
+        displayMaterial.SetFloat("_picPos", picPos);
+        displayMaterial.SetFloat("_eulerPos", eulerPos);
+        displayMaterial.SetFloat("_swePos", swePos);
+        displayMaterial.SetFloat("_fftPos", fftPos);
         displayMaterial.SetInt("_nx", nx);
         displayMaterial.SetInt("_ny", ny);
-        if (particleBuf == null) return;
-
-        // 1. マテリアルにデータをセット
         displayMaterial.SetBuffer("_Particles", particleBuf);
         displayMaterial.SetVector("_ObjPos", transform.position);
         displayMaterial.SetVector("_ObjScale", transform.localScale);
+        displayMaterial.SetBuffer("_ActiveList", activeListBuf);
+        displayMaterial.SetFloat("_aspectRatio", aspect);
 
-        // 2. 描画実行 (Pass 0 を使用)
-        displayMaterial.SetPass(0);
-        
-        // 1粒子あたり6頂点（三角形2枚）で Quad を作る
-        Graphics.DrawProceduralNow(MeshTopology.Triangles, PARTICLES * 6);
+        // 流体パーティクルの描画（Pass0: 背景, Pass1: 流体）
+        displayMaterial.SetPass(1);
+        // CopyCountしたcurrentCountを使って、生きている数だけ描画
+        Graphics.DrawProceduralNow(MeshTopology.Triangles, 6, currentCount);
     }
 
     void OnDestroy()
@@ -410,6 +435,10 @@ public class LOD2DManager : MonoBehaviour
         weightYBuf?.Release();
         dotBuf?.Release();
         cgVarsBuf?.Release();
+        countBuf?.Release();
+        activeListBuf?.Release();
+        deadPoolBuf?.Release();
+
 
         if (velXTex) velXTex.Release();
         if (velYTex) velYTex.Release();
