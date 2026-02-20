@@ -33,7 +33,6 @@ public class FLIP2DManager : MonoBehaviour
         public int height;
     }
 
-    MGLevel[] mgLevels;
 
     ComputeBuffer particleBuf,velXBuf,velYBuf,weightXBuf,weightYBuf,dotBuf,cgVarsBuf;
     RenderTexture velXTex,velYTex,velXOldTex,velYOldTex,presTex,divTex,resTex,dirTex,apTex,preconTex,typeTex;
@@ -244,7 +243,6 @@ public class FLIP2DManager : MonoBehaviour
         compute.Dispatch(kG2PAdv, threadGroups, 1, 1);
         
     }
-    
 
     void SolvePressure(int groupX, int groupY)
     {

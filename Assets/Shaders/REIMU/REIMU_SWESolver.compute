@@ -1,0 +1,258 @@
+#pragma kernel ComputeFlux
+#pragma kernel UpdateState
+#pragma kernel CombineRK2
+#pragma kernel CopyBufferOriginal
+#pragma kernel AddSourceTerms
+#pragma kernel ApplyArtificialViscosity
+#pragma kernel AddSourceTermsSubcycled
+
+// ==========================================
+// 構造体定義
+// ==========================================
+struct SWEGrid {
+    float h;
+    float u;
+};
+
+// ==========================================
+// 定数バッファ
+// ==========================================
+cbuffer SWERuntimeParams {
+    uint _SWEGridResolution;
+    float _DeltaTime;
+    float _GridSpacing;
+    float _Gravity; // 9.81
+    float _SubSteps; // サブサイクル回数
+};
+
+// ==========================================
+// バッファ定義
+// ==========================================
+
+// 入出力バッファ
+RWStructuredBuffer<SWEGrid> _SWEBuffer;
+RWStructuredBuffer<SWEGrid> _SWEBufferOut; // RK2の中間状態用
+RWStructuredBuffer<float2> _FluxBuffer;    // セル境界のフラックス (h_flux, hu_flux)
+RWStructuredBuffer<SWEGrid> _SWEBufferOriginal;
+
+RWStructuredBuffer<int> _SWEMassSourceInt;
+RWStructuredBuffer<int> _SWEMomentumSourceInt;
+float _FixedPointMultiplier;
+StructuredBuffer<float> _HFlipBuffer;
+
+// ==========================================
+// ヘルパー関数
+// ==========================================
+// MinModリミッタ
+float MinMod(float a, float b) {
+    if (a * b > 0.0) {
+        return abs(a) < abs(b) ? a : b;
+    }
+    return 0.0;
+}
+
+// HLLCフラックス計算
+float2 CalcHLLCFlux(float hL, float uL, float hR, float uR) {
+    // 物理限界のクランプ
+    hL = max(hL, 1e-4);
+    hR = max(hR, 1e-4);
+    uL = clamp(uL, -20.0, 20.0);
+    uR = clamp(uR, -20.0, 20.0);
+
+    // C#側からの転送漏れによる0除算やNaNを防ぐための直接定義
+    float g = 9.81; 
+    
+    // 左右それぞれの純粋な物理フラックス
+    float2 fL = float2(hL * uL, hL * uL * uL + 0.5 * g * hL * hL);
+    float2 fR = float2(hR * uR, hR * uR * uR + 0.5 * g * hR * hR);
+    
+    // 左右の波の伝播速度
+    float cL = sqrt(g * hL);
+    float cR = sqrt(g * hR);
+    
+    // 最大波速（この速度以上の衝撃は存在しないという絶対的なリミッター）
+    float sMax = max(abs(uL) + cL, abs(uR) + cR);
+    
+    // 保存変数ベクトル
+    float2 U_L = float2(hL, hL * uL);
+    float2 U_R = float2(hR, hR * uR);
+    
+    // Rusanov (Local Lax-Friedrichs) フラックス
+    // ※割り算が存在しないため、数学的に絶対にゼロ除算や発散が起きない
+    return 0.5 * (fL + fR) - 0.5 * sMax * (U_R - U_L);
+}
+
+// ==========================================
+// カーネル
+// ==========================================
+
+// セル境界ごとのフラックスを計算（MUSCLスキーム）
+[numthreads(64, 1, 1)]
+void ComputeFlux(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution + 1) return;
+
+    // 境界条件（反射境界）
+    int i_m2 = max((int)i - 2, 0);
+    int i_m1 = max((int)i - 1, 0);
+    int i_p0 = min((int)i, (int)_SWEGridResolution - 1);
+    int i_p1 = min((int)i + 1, (int)_SWEGridResolution - 1);
+
+    SWEGrid g_m2 = _SWEBuffer[i_m2];
+    SWEGrid g_m1 = _SWEBuffer[i_m1];
+    SWEGrid g_p0 = _SWEBuffer[i_p0];
+    SWEGrid g_p1 = _SWEBuffer[i_p1];
+
+    // MUSCLによる再構築（左側セルの右端、右側セルの左端）
+    float dh_L = MinMod(g_m1.h - g_m2.h, g_p0.h - g_m1.h);
+    float du_L = MinMod(g_m1.u - g_m2.u, g_p0.u - g_m1.u);
+    float hL = g_m1.h + 0.5 * dh_L;
+    float uL = g_m1.u + 0.5 * du_L;
+
+    float dh_R = MinMod(g_p0.h - g_m1.h, g_p1.h - g_p0.h);
+    float du_R = MinMod(g_p0.u - g_m1.u, g_p1.u - g_p0.u);
+    float hR = g_p0.h - 0.5 * dh_R;
+    float uR = g_p0.u - 0.5 * du_R;
+
+    // 壁面反射（端の処理）
+    if (i == 0) { uL = -uR; hL = hR; }
+    if (i == _SWEGridResolution) { uR = -uL; hR = hL; }
+
+    _FluxBuffer[i] = CalcHLLCFlux(hL, uL, hR, uR);
+}
+
+// フラックスを用いてセルを更新
+[numthreads(64, 1, 1)]
+void UpdateState(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    SWEGrid state = _SWEBuffer[i];
+    float2 fluxL = _FluxBuffer[i];
+    float2 fluxR = _FluxBuffer[i + 1];
+
+    float dt_dx = _DeltaTime / _GridSpacing;
+    float h_new = state.h - dt_dx * (fluxR.x - fluxL.x);
+    float hu_new = (state.h * state.u) - dt_dx * (fluxR.y - fluxL.y);
+
+    SWEGrid outState;
+    outState.h = max(h_new, 1e-4); 
+    // 流速は物理的な常識範囲(±20)に留める
+    outState.u = clamp(hu_new / outState.h, -20.0, 20.0);
+
+    _SWEBufferOut[i] = outState;
+}
+
+[numthreads(64, 1, 1)]
+void CombineRK2(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    SWEGrid U0 = _SWEBufferOriginal[i]; // Step 0 の状態
+    SWEGrid U2 = _SWEBufferOut[i];      // Step 2 の状態
+
+    // TVD-RK2の合成: U_new = 0.5 * U0 + 0.5 * U2
+    SWEGrid finalState;
+    finalState.h = max(0.5 * (U0.h + U2.h), 1e-5);
+    
+    // 運動量(hu)を合成してから流速(u)に戻す（厳密な運動量保存のため）
+    float hu0 = U0.h * U0.u;
+    float hu2 = U2.h * U2.u;
+    float hu_final = 0.5 * (hu0 + hu2);
+    
+    finalState.u = hu_final / finalState.h;
+
+    // 最終結果をメインバッファに書き戻す
+    _SWEBuffer[i] = finalState;
+}
+
+[numthreads(64, 1, 1)]
+void CopyBufferOriginal(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    // _SWEBuffer から _SWEBufferOriginal へコピー
+    _SWEBufferOriginal[i] = _SWEBuffer[i];
+}
+
+[numthreads(64, 1, 1)]
+void AddSourceTerms(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    float addedMass = (float)_SWEMassSourceInt[i] / _FixedPointMultiplier;
+    float addedMomentum = (float)_SWEMomentumSourceInt[i] / _FixedPointMultiplier;
+
+    // 【修正】プラス（凝縮）でもマイナス（昇華）でも処理するように abs() をつける
+    if (abs(addedMass) > 1e-5) {
+        SWEGrid state = _SWEBuffer[i];
+        
+        float addedHeight = addedMass / _GridSpacing;
+        float oldMomentum = state.h * state.u;
+        
+        // 【修正】水深がマイナスにならないよう max でクリップ
+        float newHeight = max(state.h + addedHeight, 1e-5); 
+        float newU = (oldMomentum + addedMomentum) / newHeight;
+
+        state.h = newHeight;
+        state.u = newU;
+        
+        _SWEBuffer[i] = state;
+    }
+
+    _SWEMassSourceInt[i] = 0;
+    _SWEMomentumSourceInt[i] = 0;
+}
+
+// 前処理 (局所的な人工粘性)
+[numthreads(64, 1, 1)]
+void ApplyArtificialViscosity(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    if (i == 0 || i == _SWEGridResolution - 1) {
+        _SWEBufferOut[i] = _SWEBuffer[i];
+        return;
+    }
+
+    SWEGrid state = _SWEBuffer[i];
+    SWEGrid stateL = _SWEBuffer[i - 1];
+    SWEGrid stateR = _SWEBuffer[i + 1];
+
+    // APICが処理しきれなかった極端なノイズのみを軽く平滑化する
+    // 係数を 0.3 から 0.1 に下げ、のっぺり広がるのを防ぐ
+    float alpha = 0.1; 
+    state.h = state.h + alpha * 0.5 * (stateL.h - 2.0 * state.h + stateR.h);
+    state.u = state.u + alpha * 0.5 * (stateL.u - 2.0 * state.u + stateR.u);
+    
+    _SWEBufferOut[i] = state;
+}
+
+// サブサイクル回数で割ったソース加算
+[numthreads(64, 1, 1)]
+void AddSourceTermsSubcycled(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _SWEGridResolution) return;
+
+    // 仕様書通り、サブサイクル回数(_SubSteps)で割って少しずつ加算/減算する
+    float addedMass = ((float)_SWEMassSourceInt[i] / _FixedPointMultiplier) / _SubSteps;
+    float addedMomentum = ((float)_SWEMomentumSourceInt[i] / _FixedPointMultiplier) / _SubSteps;
+
+    if (abs(addedMass) > 1e-6) {
+        SWEGrid state = _SWEBuffer[i];
+        
+        float addedHeight = addedMass / _GridSpacing;
+        
+        // ★追加: 1回のサブサイクルで変化できる高さを ±1.0m に制限して衝撃を和らげる
+        addedHeight = clamp(addedHeight, -1.0, 1.0); 
+        
+        float newHeight = max(state.h + addedHeight, 1e-4); 
+        float oldMomentum = state.h * state.u;
+        float newU = clamp((oldMomentum + addedMomentum) / newHeight, -20.0, 20.0);
+
+        state.h = newHeight;
+        state.u = newU;
+        _SWEBuffer[i] = state;
+    }
+    // ※ここではバッファをクリアしない（C#のフレーム先頭で1回だけクリアする）
+}

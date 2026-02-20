@@ -1,0 +1,360 @@
+#pragma kernel ClearGrid
+#pragma kernel P2G
+#pragma kernel UpdateGridVelocity
+#pragma kernel G2P_Advect
+#pragma kernel MarkAndDivergence
+#pragma kernel JacobiIteration
+#pragma kernel CopyPressure
+#pragma kernel ApplyPressure
+
+// ==========================================
+// 構造体定義
+// ==========================================
+
+struct Particle {
+    float2 position;
+    float2 velocity;
+    float mass;
+    float4 C; // C11, C12, C21, C22
+    float age;
+};
+
+// ==========================================
+// 定数バッファ
+// ==========================================
+
+uint _ActiveCount;
+uint _GridSizeX;
+uint _GridSizeY;
+float _GridSpacing;
+float _DeltaTime;
+float _FixedPointMultiplier;
+float _Gravity;
+uint _MaxParticles;
+
+// ==========================================
+// バッファ定義
+// ==========================================
+
+// 粒子とActiveリスト
+RWStructuredBuffer<Particle> _ParticleBuffer;
+StructuredBuffer<uint> _ActiveBuffer;
+
+// MACグリッド用バッファ (アトミック加算用int型)
+RWStructuredBuffer<int> _GridMassInt;
+RWStructuredBuffer<int> _GridUInt;
+RWStructuredBuffer<int> _GridWInt;
+
+// グリッド速度計算結果 (float型)
+RWStructuredBuffer<float> _GridU;
+RWStructuredBuffer<float> _GridW;
+
+RWStructuredBuffer<float> _GridDivergence;
+RWStructuredBuffer<float> _GridPressure;
+RWStructuredBuffer<float> _GridPressureTemp;
+RWStructuredBuffer<int> _GridCellType; // 0: Air(空気), 1: Fluid(水), 2: Solid(壁/床)
+
+StructuredBuffer<float> _HFlipBuffer;
+
+// ==========================================
+// ヘルパー関数
+// ==========================================
+
+// 1次元インデックス変換
+uint GetIndex(int x, int y) {
+    x = clamp(x, 0, _GridSizeX - 1);
+    y = clamp(y, 0, _GridSizeY - 1);
+    return y * _GridSizeX + x;
+}
+
+// ==========================================
+// カーネル
+// ==========================================
+
+// 1. グリッドのクリア
+[numthreads(64, 1, 1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+    
+    _GridMassInt[i] = 0;
+    _GridUInt[i] = 0;
+    _GridWInt[i] = 0;
+    _GridU[i] = 0.0;
+    _GridW[i] = 0.0;
+}
+
+// 2. P2G (Particle to Grid)
+[numthreads(64, 1, 1)]
+void P2G(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _MaxParticles) return;
+    Particle p = _ParticleBuffer[id.x];
+    if (p.mass <= 0) return; // 死んでいる粒子はスキップ
+    
+    float invDx = 1.0 / _GridSpacing;
+    
+    // MACグリッドにおけるUとWのサンプリング位置のオフセット
+    float2 posU = p.position * invDx - float2(0.0, 0.5);
+    float2 posW = p.position * invDx - float2(0.5, 0.0);
+    
+    int baseUX = floor(posU.x); int baseUY = floor(posU.y);
+    float fxU = posU.x - baseUX; float fyU = posU.y - baseUY;
+    
+    int baseWX = floor(posW.x); int baseWY = floor(posW.y);
+    float fxW = posW.x - baseWX; float fyW = posW.y - baseWY;
+    
+    // 双線形補間の重み計算マクロ的関数
+    float wU[2][2] = { {(1-fxU)*(1-fyU), fxU*(1-fyU)}, {(1-fxU)*fyU, fxU*fyU} };
+    float wW[2][2] = { {(1-fxW)*(1-fyW), fxW*(1-fyW)}, {(1-fxW)*fyW, fxW*fyW} };
+
+    // U成分のP2G
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            float weight = wU[j][i];
+            float2 dpos = (float2(baseUX + i, baseUY + j) + float2(0.0, 0.5)) * _GridSpacing - p.position;
+            
+            // APICの運動量転写: mass * weight * (velocity + C * dpos)
+            float affineU = p.C.x * dpos.x + p.C.y * dpos.y;
+            float momentumU = p.mass * weight * (p.velocity.x + affineU);
+            float massContU = p.mass * weight;
+            
+            uint gridIdx = GetIndex(baseUX + i, baseUY + j);
+            InterlockedAdd(_GridUInt[gridIdx], (int)(momentumU * _FixedPointMultiplier));
+            InterlockedAdd(_GridMassInt[gridIdx], (int)(massContU * _FixedPointMultiplier)); // Uのノードで質量を近似
+        }
+    }
+    
+    // W成分のP2G
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            float weight = wW[j][i];
+            float2 dpos = (float2(baseWX + i, baseWY + j) + float2(0.5, 0.0)) * _GridSpacing - p.position;
+            
+            float affineW = p.C.z * dpos.x + p.C.w * dpos.y;
+            float momentumW = p.mass * weight * (p.velocity.y + affineW);
+            
+            uint gridIdx = GetIndex(baseWX + i, baseWY + j);
+            InterlockedAdd(_GridWInt[gridIdx], (int)(momentumW * _FixedPointMultiplier));
+        }
+    }
+}
+
+// 3. グリッドの速度更新と外力(重力)適用
+[numthreads(64, 1, 1)]
+void UpdateGridVelocity(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+    
+    float mass = (float)_GridMassInt[i] / _FixedPointMultiplier;
+    
+    if (mass > 1e-5) {
+        _GridU[i] = ((float)_GridUInt[i] / _FixedPointMultiplier) / mass;
+        _GridW[i] = ((float)_GridWInt[i] / _FixedPointMultiplier) / mass;
+        
+        // 重力の適用
+        _GridW[i] -= _Gravity * _DeltaTime;
+        
+        // 簡易的な床の境界条件 (y=0付近)
+        int y = i / _GridSizeX;
+        if (y <= 1 && _GridW[i] < 0) {
+            _GridW[i] = 0;
+            _GridU[i] *= 0.5; // 床の摩擦
+        }
+    }
+}
+
+// 4. G2P (Grid to Particle) と 移流
+[numthreads(64, 1, 1)]
+void G2P_Advect(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _MaxParticles) return;
+    Particle p = _ParticleBuffer[id.x];
+    if (p.mass <= 0) return; // 死んでいる粒子はスキップ
+    
+    float invDx = 1.0 / _GridSpacing;
+    
+    float2 posU = p.position * invDx - float2(0.0, 0.5);
+    float2 posW = p.position * invDx - float2(0.5, 0.0);
+    
+    int baseUX = floor(posU.x); int baseUY = floor(posU.y);
+    float fxU = posU.x - baseUX; float fyU = posU.y - baseUY;
+    
+    int baseWX = floor(posW.x); int baseWY = floor(posW.y);
+    float fxW = posW.x - baseWX; float fyW = posW.y - baseWY;
+    
+    float wU[2][2] = { {(1-fxU)*(1-fyU), fxU*(1-fyU)}, {(1-fxU)*fyU, fxU*fyU} };
+    float wW[2][2] = { {(1-fxW)*(1-fyW), fxW*(1-fyW)}, {(1-fxW)*fyW, fxW*fyW} };
+
+    float2 newVel = float2(0, 0);
+    float4 newC = float4(0, 0, 0, 0); // C11, C12, C21, C22
+    
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            uint idxU = GetIndex(baseUX + i, baseUY + j);
+            uint idxW = GetIndex(baseWX + i, baseWY + j);
+            
+            float uNode = _GridU[idxU];
+            float wNode = _GridW[idxW];
+            
+            float weightU = wU[j][i];
+            float weightW = wW[j][i];
+            
+            newVel.x += uNode * weightU;
+            newVel.y += wNode * weightW;
+            
+            // アフィン行列の更新 (速度の空間勾配に相当)
+            float2 dposU = (float2(baseUX + i, baseUY + j) + float2(0.0, 0.5)) * _GridSpacing - p.position;
+            float2 dposW = (float2(baseWX + i, baseWY + j) + float2(0.5, 0.0)) * _GridSpacing - p.position;
+            
+            float normFactor = 4.0 * invDx * invDx;
+            newC.x += weightU * uNode * dposU.x * normFactor;
+            newC.y += weightU * uNode * dposU.y * normFactor;
+            newC.z += weightW * wNode * dposW.x * normFactor;
+            newC.w += weightW * wNode * dposW.y * normFactor;
+        }
+    }
+    
+    p.velocity = newVel;
+    p.C = newC;
+    
+    // 【修正4】APICのCFL条件（1フレームに1マス以上移動しない）を強制適用
+    // _DeltaTime が 0.01、_GridSpacing が 0.1 の場合、max_v は約 9.0 になります
+    float max_v = (_GridSpacing / _DeltaTime) * 0.9;
+    
+    p.velocity.x = clamp(p.velocity.x, -max_v, max_v);
+    p.velocity.y = clamp(p.velocity.y, -max_v, max_v);
+
+    // アフィン行列が異常増幅して次回以降のP2Gを破壊するのを防ぐ
+    p.C = clamp(p.C, -20.0, 20.0);
+
+    p.position += p.velocity * _DeltaTime;
+    
+    p.age = max(0.0, p.age - _DeltaTime);
+    
+    p.position.x = clamp(p.position.x, 1.0, (_GridSizeX - 2) * _GridSpacing);
+    p.position.y = max(p.position.y, 0.1);
+    
+    _ParticleBuffer[id.x] = p;
+}
+
+// 5. セルの状態判定と発散(Divergence)の計算
+[numthreads(64, 1, 1)]
+void MarkAndDivergence(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+
+    int x = i % _GridSizeX;
+    int y = i / _GridSizeX;
+
+    float cellY = (y + 0.5) * _GridSpacing;
+    float h_flip = _HFlipBuffer[x]; 
+
+    float mass = (float)_GridMassInt[i] / _FixedPointMultiplier;
+
+    _GridPressure[i] = 0;
+    _GridPressureTemp[i] = 0;
+
+    if (y <= 1 || x == 0 || x == _GridSizeX - 1 || y == _GridSizeY - 1) {
+        _GridCellType[i] = 2; // Solid (外枠)
+    } 
+    // ★修正: h_FLIP以下を静水圧(3)ではなく、固い壁(2)として扱う
+    else if (cellY < h_flip) {
+        _GridCellType[i] = 2; // Solid (SWEの内部)
+    } 
+    else if (mass > 1e-5) {
+        _GridCellType[i] = 1; // Fluid (空中の飛沫)
+    } 
+    else {
+        _GridCellType[i] = 0; // Air
+    }
+
+    if (_GridCellType[i] == 1) {
+        float uR = _GridU[GetIndex(x + 1, y)];
+        float uL = _GridU[i];
+        float wT = _GridW[GetIndex(x, y + 1)];
+        float wB = _GridW[i];
+        _GridDivergence[i] = (uR - uL + wT - wB) / _GridSpacing;
+    } else {
+        _GridDivergence[i] = 0;
+    }
+}
+
+// 6. ヤコビ反復法
+[numthreads(64, 1, 1)]
+void JacobiIteration(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+
+    if (_GridCellType[i] != 1) return; // 動く水(1)のみ圧力を再計算
+
+    int x = i % _GridSizeX;
+    int y = i / _GridSizeX;
+
+    float pL = (x > 0) ? _GridPressure[GetIndex(x - 1, y)] : 0;
+    float pR = (x < _GridSizeX - 1) ? _GridPressure[GetIndex(x + 1, y)] : 0;
+    float pB = (y > 0) ? _GridPressure[GetIndex(x, y - 1)] : 0;
+    float pT = (y < _GridSizeY - 1) ? _GridPressure[GetIndex(x, y + 1)] : 0;
+
+    // 壁(2)の場合は自身の圧力を跳ね返す
+    if (_GridCellType[GetIndex(x - 1, y)] == 2) pL = _GridPressure[i];
+    if (_GridCellType[GetIndex(x + 1, y)] == 2) pR = _GridPressure[i];
+    if (_GridCellType[GetIndex(x, y - 1)] == 2) pB = _GridPressure[i];
+    if (_GridCellType[GetIndex(x, y + 1)] == 2) pT = _GridPressure[i];
+
+    float div = _GridDivergence[i];
+    float factor = (_GridSpacing * _GridSpacing) / _DeltaTime;
+    
+    _GridPressureTemp[i] = (pL + pR + pB + pT - div * factor) / 4.0;
+}
+
+// 6.5 ヤコビ反復のバッファ入れ替え
+[numthreads(64, 1, 1)]
+void CopyPressure(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+    _GridPressure[i] = _GridPressureTemp[i];
+}
+
+// 7. 圧力勾配を速度に適用
+[numthreads(64, 1, 1)]
+void ApplyPressure(uint3 id : SV_DispatchThreadID) {
+    uint i = id.x;
+    if (i >= _GridSizeX * _GridSizeY) return;
+
+    int x = i % _GridSizeX;
+    int y = i / _GridSizeX;
+
+    float dt_dx = _DeltaTime / _GridSpacing;
+
+    // 水平速度(U)
+    if (x > 0) {
+        int typeL = _GridCellType[GetIndex(x - 1, y)];
+        int typeC = _GridCellType[i];
+        
+        // どちらかが動く水(1)なら、圧力差で速度を更新
+        if (typeL == 1 || typeC == 1) {
+            float pL = _GridPressure[GetIndex(x - 1, y)];
+            float pC = _GridPressure[i];
+            
+            if (typeL == 0) pL = 0; if (typeC == 0) pC = 0;
+            if (typeL == 2) pL = pC; if (typeC == 2) pC = pL;
+
+            _GridU[i] -= dt_dx * (pC - pL);
+        }
+    }
+
+    // 鉛直速度(W)
+    if (y > 0) {
+        int typeB = _GridCellType[GetIndex(x, y - 1)];
+        int typeC = _GridCellType[i];
+
+        if (typeB == 1 || typeC == 1) {
+            float pB = _GridPressure[GetIndex(x, y - 1)];
+            float pC = _GridPressure[i];
+
+            if (typeB == 0) pB = 0; if (typeC == 0) pC = 0;
+            if (typeB == 2) pB = pC; if (typeC == 2) pC = pB;
+
+            _GridW[i] -= dt_dx * (pC - pB);
+        }
+    }
+}
