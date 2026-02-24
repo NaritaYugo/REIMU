@@ -7,8 +7,8 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: REIMU_ParticleRender
-  m_Shader: {fileID: 4800000, guid: c88ad717eb60d24449ac06790fcd3f27, type: 3}
+  m_Name: REIMU_Splash
+  m_Shader: {fileID: 4800000, guid: cef2883e0769c6048aece1ef71a353d6, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -24,7 +24,17 @@ Material:
     serializedVersion: 3
     m_TexEnvs: []
     m_Ints: []
-    m_Floats: []
-    m_Colors: []
+    m_Floats:
+    - _DensityThreshold: 0.2
+    - _FoamFactorThreshold: 0.5
+    - _MaxSize: 0.24
+    - _MinSize: 0.2
+    - _ScatterSpread: 0.2
+    - _Shininess: 128
+    - _SpeedForMin: 15
+    - _SpeedThreshold: 100
+    - _SplashSize: 0.05
+    m_Colors:
+    - _SplashColor: {r: 1, g: 1, b: 1, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

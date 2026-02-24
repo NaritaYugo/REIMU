@@ -1,0 +1,306 @@
+#pragma kernel ClearGrid
+#pragma kernel SplatParticles
+#pragma kernel SplatSWE
+#pragma kernel BlurX
+#pragma kernel BlurY
+#pragma kernel BlurZ
+#pragma kernel MarchingCubes
+#pragma kernel ComputeFoamFactor
+
+struct APICParticle {
+    float3 position; float mass;
+    float3 velocity; float age;
+    float3 c1; float pad_c1; float3 c2; float pad_c2; float3 c3; float pad_c3;
+};
+
+struct SWECell {
+    float h; float hu; float hv; float padding;
+};
+
+struct Triangle {
+    float3 v0, v1, v2;
+    float3 norm;
+    float3 velocity;
+};
+
+// --- バッファ ---
+StructuredBuffer<APICParticle> ParticleBuffer;
+StructuredBuffer<SWECell> SWE_State_Read;
+RWStructuredBuffer<float> VoxelGrid_FoamFactor; 
+float _FoamSampleRadius;
+
+// アトミック加算用の元グリッド（int型）
+RWStructuredBuffer<int> VoxelGrid_Density;
+RWStructuredBuffer<int> VoxelGrid_MomX;
+RWStructuredBuffer<int> VoxelGrid_MomY;
+RWStructuredBuffer<int> VoxelGrid_MomZ;
+
+// ブラー用のPing-Pongバッファ（float型）
+RWStructuredBuffer<float> VoxelGrid_BlurA;
+RWStructuredBuffer<float> VoxelGrid_BlurB;
+RWStructuredBuffer<float> VoxelGrid_FinalDensity; // 最終的に全シェーダーが参照する密度
+
+AppendStructuredBuffer<Triangle> TriangleBuffer;
+StructuredBuffer<int> edgeTable;
+StructuredBuffer<int> triTable;
+StructuredBuffer<uint> ActiveParticleList_Read;
+ByteAddressBuffer ActiveParticleCount;
+
+int3 _GridSize;
+float _CellSize;
+float _ParticleRadius;
+float _IsoLevel;
+float _SplashSpeedThreshold;
+int2 swe_grid_size;
+float dx_swe;
+
+// --- 1. クリア ---
+[numthreads(8,8,8)]
+void ClearGrid(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+    int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
+    VoxelGrid_Density[flatIdx] = 0;
+    VoxelGrid_MomX[flatIdx] = 0;
+    VoxelGrid_MomY[flatIdx] = 0;
+    VoxelGrid_MomZ[flatIdx] = 0;
+}
+
+// --- 2. APIC粒子のスプラッティング (間接ディスパッチ対応版) ---
+[numthreads(64,1,1)]
+void SplatParticles(uint3 id : SV_DispatchThreadID) {
+    uint count = ActiveParticleCount.Load(0);
+    if (id.x >= count) return;
+    
+    uint index = ActiveParticleList_Read[id.x];
+    APICParticle p = ParticleBuffer[index];
+    if (p.mass <= 0.0) return;
+
+    float3 unityPos = float3(p.position.x, p.position.z, p.position.y);
+    float3 unityVel = float3(p.velocity.x, p.velocity.z, p.velocity.y);
+
+    float3 gridPos = unityPos / _CellSize;
+    int3 baseIdx = floor(gridPos - 0.5f);
+    float3 f = frac(gridPos - 0.5f); 
+
+    // 【軽量化の極意 1】速度（運動量）は一番近い「1ボクセル」にだけ書き込む
+    // 流体のメッシュの形には影響しないため、これで十分な見た目になります（アトミック加算を24回削減！）
+    int3 nearestIdx = round(gridPos);
+    if (all(nearestIdx >= 0) && all(nearestIdx < _GridSize)) {
+        int nearestFlatIdx = nearestIdx.x + nearestIdx.y * _GridSize.x + nearestIdx.z * _GridSize.x * _GridSize.y;
+        float3 mom = unityVel * p.mass * 8.0f; // ブースト係数に合わせてスケール
+        InterlockedAdd(VoxelGrid_MomX[nearestFlatIdx], (int)(mom.x * 10000.0f));
+        InterlockedAdd(VoxelGrid_MomY[nearestFlatIdx], (int)(mom.y * 10000.0f));
+        InterlockedAdd(VoxelGrid_MomZ[nearestFlatIdx], (int)(mom.z * 10000.0f));
+    }
+
+    // 【軽量化の極意 2】密度は8点（2x2x2）に分配するが、IsoLevelを超えるように「意図的に太らせる」
+    // 前の27点加算と同じくらいの「水滴の大きさ」を保つためのブースト係数です。
+    // ※飛沫が小さすぎる場合は 10.0 や 15.0 に上げてください。
+    float densityBoost = 8.0f; 
+
+    [unroll]
+    for (int z = 0; z <= 1; z++) {
+        [unroll]
+        for (int y = 0; y <= 1; y++) {
+            [unroll]
+            for (int x = 0; x <= 1; x++) {
+                int3 voxelIdx = baseIdx + int3(x, y, z);
+                if (any(voxelIdx < 0) || any(voxelIdx >= _GridSize)) continue;
+
+                float weight = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y) * (z == 0 ? 1.0f - f.z : f.z);
+                
+                // ブースト係数を掛けて、少ない計算点でも十分な濃さを出す
+                float densityContribution = weight * p.mass * densityBoost;
+
+                int flatIdx = voxelIdx.x + voxelIdx.y * _GridSize.x + voxelIdx.z * _GridSize.x * _GridSize.y;
+                
+                // 密度だけアトミック加算
+                InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(densityContribution * 10000.0f));
+            }
+        }
+    }
+}
+
+// --- 3. SWE海面の密度書き込み ---
+[numthreads(8,8,8)]
+void SplatSWE(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+
+    // ボクセルのワールド座標(XZ)を計算
+    float worldX = id.x * _CellSize;
+    float worldZ = id.z * _CellSize;
+
+    // SWEのグリッドインデックスに変換
+    int sweX = clamp(int(worldX / dx_swe), 0, swe_grid_size.x - 1);
+    int sweY = clamp(int(worldZ / dx_swe), 0, swe_grid_size.y - 1); // ZがSWEのY
+    int sweIdx = sweY * swe_grid_size.x + sweX;
+
+    float h = SWE_State_Read[sweIdx].h;
+    float voxelY = id.y * _CellSize;
+
+    // 海面より下にあるボクセルに密度を追加（表面付近は滑らかに減衰させる）
+    float diff = h - voxelY;
+    if (diff > 0.0) {
+        float density = saturate(diff / _CellSize); // 完全に沈んでいれば1.0、表面なら0.0~1.0
+        int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
+        
+        // SWEは静止した水として質量のみ追加
+        InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(density * 10000.0f));
+    }
+}
+
+// --- 4. 空間ブラー (分離畳み込み O(N)) ---
+// 重み (1, 2, 1) の簡単なガウシアンブラー
+float GetRawDensity(int3 idx) {
+    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
+    int flatIdx = idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y;
+    return (float)VoxelGrid_Density[flatIdx] / 10000.0f;
+}
+
+[numthreads(8,8,8)]
+void BlurX(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+    float d = GetRawDensity(id - int3(1,0,0)) * 0.25 
+            + GetRawDensity(id) * 0.5 
+            + GetRawDensity(id + int3(1,0,0)) * 0.25;
+    VoxelGrid_BlurA[id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y] = d;
+}
+
+float GetBlurA(int3 idx) {
+    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
+    return VoxelGrid_BlurA[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
+}
+
+[numthreads(8,8,8)]
+void BlurY(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+    float d = GetBlurA(id - int3(0,1,0)) * 0.25 
+            + GetBlurA(id) * 0.5 
+            + GetBlurA(id + int3(0,1,0)) * 0.25;
+    VoxelGrid_BlurB[id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y] = d;
+}
+
+float GetBlurB(int3 idx) {
+    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
+    return VoxelGrid_BlurB[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
+}
+
+[numthreads(8,8,8)]
+void BlurZ(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+    float d = GetBlurB(id - int3(0,0,1)) * 0.25 
+            + GetBlurB(id) * 0.5 
+            + GetBlurB(id + int3(0,0,1)) * 0.25;
+    VoxelGrid_FinalDensity[id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y] = d;
+}
+
+// --- 5. マーチングキューブ ---
+float GetFinalDensity(int3 idx) {
+    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
+    return VoxelGrid_FinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
+}
+
+float3 GetNormal(int3 idx) {
+    float nx = GetFinalDensity(idx + int3(1,0,0)) - GetFinalDensity(idx + int3(-1,0,0));
+    float ny = GetFinalDensity(idx + int3(0,1,0)) - GetFinalDensity(idx + int3(0,-1,0));
+    float nz = GetFinalDensity(idx + int3(0,0,1)) - GetFinalDensity(idx + int3(0,0,-1));
+    return normalize(float3(-nx, -ny, -nz) + 0.0001);
+}
+
+float3 GetVelocity(int3 idx) {
+    if (any(idx < 0) || any(idx >= _GridSize)) return float3(0,0,0);
+    int flatIdx = idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y;
+    
+    // 速度計算は元のローカル密度を使用する（ブラーをかけると運動量が滲むため）
+    float totalDensity = (float)VoxelGrid_Density[flatIdx];
+    if (totalDensity < 0.0001f) return float3(0,0,0); 
+
+    float3 totalMom = float3((float)VoxelGrid_MomX[flatIdx], (float)VoxelGrid_MomY[flatIdx], (float)VoxelGrid_MomZ[flatIdx]);
+    return totalMom / totalDensity;
+}
+
+float3 VertexInterp(float iso, float3 p1, float3 p2, float valp1, float valp2) {
+    if (abs(iso - valp1) < 0.00001) return p1;
+    if (abs(iso - valp2) < 0.00001) return p2;
+    if (abs(valp1 - valp2) < 0.00001) return p1;
+    float mu = (iso - valp1) / (valp2 - valp1);
+    return p1 + mu * (p2 - p1);
+}
+
+[numthreads(8,8,8)]
+void MarchingCubes(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)(_GridSize - 1))) return;
+
+    float3 p[8];
+    p[0] = (id + float3(0,0,0)) * _CellSize; p[1] = (id + float3(1,0,0)) * _CellSize;
+    p[2] = (id + float3(1,0,1)) * _CellSize; p[3] = (id + float3(0,0,1)) * _CellSize;
+    p[4] = (id + float3(0,1,0)) * _CellSize; p[5] = (id + float3(1,1,0)) * _CellSize;
+    p[6] = (id + float3(1,1,1)) * _CellSize; p[7] = (id + float3(0,1,1)) * _CellSize;
+
+    // ブラー後の密度を取得
+    float val[8];
+    val[0] = GetFinalDensity(id + int3(0,0,0)); val[1] = GetFinalDensity(id + int3(1,0,0));
+    val[2] = GetFinalDensity(id + int3(1,0,1)); val[3] = GetFinalDensity(id + int3(0,0,1));
+    val[4] = GetFinalDensity(id + int3(0,1,0)); val[5] = GetFinalDensity(id + int3(1,1,0));
+    val[6] = GetFinalDensity(id + int3(1,1,1)); val[7] = GetFinalDensity(id + int3(0,1,1));
+
+    int cubeIndex = 0;
+    if (val[0] < _IsoLevel) cubeIndex |= 1; if (val[1] < _IsoLevel) cubeIndex |= 2;
+    if (val[2] < _IsoLevel) cubeIndex |= 4; if (val[3] < _IsoLevel) cubeIndex |= 8;
+    if (val[4] < _IsoLevel) cubeIndex |= 16; if (val[5] < _IsoLevel) cubeIndex |= 32;
+    if (val[6] < _IsoLevel) cubeIndex |= 64; if (val[7] < _IsoLevel) cubeIndex |= 128;
+
+    int edges = edgeTable[cubeIndex];
+    if (edges == 0) return;
+
+    float3 vertList[12];
+    if (edges & 1) vertList[0] = VertexInterp(_IsoLevel, p[0], p[1], val[0], val[1]);
+    if (edges & 2) vertList[1] = VertexInterp(_IsoLevel, p[1], p[2], val[1], val[2]);
+    if (edges & 4) vertList[2] = VertexInterp(_IsoLevel, p[2], p[3], val[2], val[3]);
+    if (edges & 8) vertList[3] = VertexInterp(_IsoLevel, p[3], p[0], val[3], val[0]);
+    if (edges & 16) vertList[4] = VertexInterp(_IsoLevel, p[4], p[5], val[4], val[5]);
+    if (edges & 32) vertList[5] = VertexInterp(_IsoLevel, p[5], p[6], val[5], val[6]);
+    if (edges & 64) vertList[6] = VertexInterp(_IsoLevel, p[6], p[7], val[6], val[7]);
+    if (edges & 128) vertList[7] = VertexInterp(_IsoLevel, p[7], p[4], val[7], val[4]);
+    if (edges & 256) vertList[8] = VertexInterp(_IsoLevel, p[0], p[4], val[0], val[4]);
+    if (edges & 512) vertList[9] = VertexInterp(_IsoLevel, p[1], p[5], val[1], val[5]);
+    if (edges & 1024) vertList[10] = VertexInterp(_IsoLevel, p[2], p[6], val[2], val[6]);
+    if (edges & 2048) vertList[11] = VertexInterp(_IsoLevel, p[3], p[7], val[3], val[7]);
+
+    float3 norm = GetNormal(id);
+    float3 velocity = GetVelocity(id);
+
+    for (int i = 0; triTable[cubeIndex * 16 + i] != -1; i += 3) {
+        Triangle tri;
+        tri.v0 = vertList[triTable[cubeIndex * 16 + i]];
+        tri.v1 = vertList[triTable[cubeIndex * 16 + i + 1]];
+        tri.v2 = vertList[triTable[cubeIndex * 16 + i + 2]];
+        tri.norm = norm;
+        tri.velocity = velocity;
+        TriangleBuffer.Append(tri);
+    }
+}
+
+[numthreads(8,8,8)]
+void ComputeFoamFactor(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_GridSize)) return;
+
+    int r = max(1, (int)_FoamSampleRadius);
+    float count = 0.0;
+    
+    // 1. まず自分自身（中心）が水の中かをチェック
+    if (GetFinalDensity(id) >= _IsoLevel) count += 1.0;
+
+    // 2. 上下左右前後の「直交する6方向」だけをチェック（斜め8点は廃止！）
+    if (GetFinalDensity(id + int3( r,  0,  0)) >= _IsoLevel) count += 1.0;
+    if (GetFinalDensity(id + int3(-r,  0,  0)) >= _IsoLevel) count += 1.0;
+    if (GetFinalDensity(id + int3( 0,  r,  0)) >= _IsoLevel) count += 1.0;
+    if (GetFinalDensity(id + int3( 0, -r,  0)) >= _IsoLevel) count += 1.0;
+    if (GetFinalDensity(id + int3( 0,  0,  r)) >= _IsoLevel) count += 1.0;
+    if (GetFinalDensity(id + int3( 0,  0, -r)) >= _IsoLevel) count += 1.0;
+
+    int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
+    
+    // 14点から「7点満点」の多数決に変更
+    VoxelGrid_FoamFactor[flatIdx] = count / 7.0f;
+}
