@@ -1,0 +1,91 @@
+#pragma kernel CS_IFFT_Horizontal
+#pragma kernel CS_IFFT_Vertical
+#pragma kernel CS_Finalize
+
+// バタフライテクスチャ (x: Twiddle Real, y: Twiddle Imag, z: Top Index, w: Bottom Index)
+Texture2D<float4> ButterflyTex;
+uint Stage; // 現在のFFTステージ
+
+// Ping-Pongバッファ用の入力・出力
+Texture2D<float2> Input_H;
+Texture2D<float2> Input_Dx;
+Texture2D<float2> Input_Dz;
+
+RWTexture2D<float2> Output_H;
+RWTexture2D<float2> Output_Dx;
+RWTexture2D<float2> Output_Dz;
+
+// 最終的な変位マップ (X: Dx, Y: H, Z: Dz)
+RWTexture2D<float4> DisplacementMap;
+float LodAmplitude;
+
+// 複素数乗算
+float2 ComplexMult(float2 a, float2 b) {
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+// ==========================================
+// 水平方向のIFFT (行ごとの計算)
+// ==========================================
+[numthreads(8, 8, 1)]
+void CS_IFFT_Horizontal(uint3 id : SV_DispatchThreadID) {
+    // 水平方向はX軸に沿ってFFTを行うため、Butterflyのインデックスはid.xを使う
+    float4 data = ButterflyTex[uint2(Stage, id.x)];
+    float2 twiddle = data.xy;
+    uint topIdx = (uint)data.z;
+    uint botIdx = (uint)data.w;
+
+    // 高さ(H)
+    float2 h_top = Input_H[uint2(topIdx, id.y)];
+    float2 h_bot = Input_H[uint2(botIdx, id.y)];
+    Output_H[id.xy] = h_top + ComplexMult(twiddle, h_bot);
+
+    // X変位(Dx)
+    float2 dx_top = Input_Dx[uint2(topIdx, id.y)];
+    float2 dx_bot = Input_Dx[uint2(botIdx, id.y)];
+    Output_Dx[id.xy] = dx_top + ComplexMult(twiddle, dx_bot);
+
+    // Z変位(Dz)
+    float2 dz_top = Input_Dz[uint2(topIdx, id.y)];
+    float2 dz_bot = Input_Dz[uint2(botIdx, id.y)];
+    Output_Dz[id.xy] = dz_top + ComplexMult(twiddle, dz_bot);
+}
+
+// ==========================================
+// 垂直方向のIFFT (列ごとの計算)
+// ==========================================
+[numthreads(8, 8, 1)]
+void CS_IFFT_Vertical(uint3 id : SV_DispatchThreadID) {
+    // 垂直方向はY軸に沿ってFFTを行うため、Butterflyのインデックスはid.yを使う
+    float4 data = ButterflyTex[uint2(Stage, id.y)];
+    float2 twiddle = data.xy;
+    uint topIdx = (uint)data.z;
+    uint botIdx = (uint)data.w;
+
+    float2 h_top = Input_H[uint2(id.x, topIdx)];
+    float2 h_bot = Input_H[uint2(id.x, botIdx)];
+    Output_H[id.xy] = h_top + ComplexMult(twiddle, h_bot);
+
+    float2 dx_top = Input_Dx[uint2(id.x, topIdx)];
+    float2 dx_bot = Input_Dx[uint2(id.x, botIdx)];
+    Output_Dx[id.xy] = dx_top + ComplexMult(twiddle, dx_bot);
+
+    float2 dz_top = Input_Dz[uint2(id.x, topIdx)];
+    float2 dz_bot = Input_Dz[uint2(id.x, botIdx)];
+    Output_Dz[id.xy] = dz_top + ComplexMult(twiddle, dz_bot);
+}
+
+// ==========================================
+// ファイナライズ (実部を抽出してパーミュテーション適用)
+// ==========================================
+[numthreads(8, 8, 1)]
+void CS_Finalize(uint3 id : SV_DispatchThreadID) {
+    float perm = ((id.x + id.y) % 2 == 1) ? -1.0 : 1.0;
+
+    // 【修正】LodAmplitude を掛けて高周波の暴れを抑える
+    float h = Input_H[id.xy].x * perm * LodAmplitude;
+    float dx = Input_Dx[id.xy].x * perm * LodAmplitude;
+    float dz = Input_Dz[id.xy].x * perm * LodAmplitude;
+
+    DisplacementMap[id.xy] = float4(dx, h, dz, 1.0);
+}

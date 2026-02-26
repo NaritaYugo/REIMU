@@ -1,0 +1,86 @@
+#pragma kernel CSMain
+
+#define PI 3.14159265359
+
+RWTexture2D<float4> H0_Texture;
+uint N;
+float Length;
+float Gravity;
+float WindSpeed;
+float WindDirection;
+float Fetch;
+float PeakEnhancement;
+float SpreadStrength;
+
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float rand(inout uint rng_state) {
+    rng_state = pcg_hash(rng_state);
+    return float(rng_state) / 4294967296.0;
+}
+
+float2 gaussian(inout uint rng_state) {
+    float u1 = max(1e-6, rand(rng_state));
+    float u2 = rand(rng_state);
+    float r = sqrt(-2.0 * log(u1));
+    float theta = 2.0 * PI * u2;
+    return float2(r * cos(theta), r * sin(theta));
+}
+
+float JONSWAP(float omega) {
+    float fetch_g = max(0.001, Fetch * Gravity);
+    float ws_fetch = max(0.001, WindSpeed * Fetch);
+    
+    float alpha = 0.076 * pow(abs(WindSpeed * WindSpeed / fetch_g), 0.22);
+    float wp = 22.0 * pow(abs(Gravity * Gravity / ws_fetch), 0.33333);
+    
+    float sigma = (omega <= wp) ? 0.07 : 0.09;
+    float denominator = max(0.0001, 2.0 * sigma * sigma * wp * wp);
+    float r = exp(-((omega - wp) * (omega - wp)) / denominator);
+    
+    float s = (alpha * Gravity * Gravity / pow(abs(omega), 5.0)) * exp(-1.25 * pow(abs(wp / omega), 4.0));
+    return s * pow(abs(PeakEnhancement), r);
+}
+
+float DirectionalSpread(float angle) {
+    float dTheta = angle - WindDirection;
+    dTheta = dTheta - 2.0 * PI * floor((dTheta + PI) / (2.0 * PI));
+    return pow(abs(cos(dTheta * 0.5)), 2.0 * SpreadStrength);
+}
+
+float CalculateAmplitude(float2 k) {
+    float k_length = length(k);
+    if (k_length < 0.001) return 0.0;
+    
+    float omega = sqrt(Gravity * k_length);
+    float dwdk = Gravity / (2.0 * omega);
+    float S_k = JONSWAP(omega) * dwdk / k_length;
+    
+    float angle = atan2(k.y, k.x);
+    float D_theta = DirectionalSpread(angle);
+    
+    float dK = (2.0 * PI) / Length;
+    return sqrt(S_k * D_theta) * dK * 0.7071067;
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= N || id.y >= N) return;
+    
+    // 【修正】k空間の中心を N/2 に配置する (Centered K-Space)
+    int kx_int = (int)id.x - (int)(N / 2);
+    int ky_int = (int)id.y - (int)(N / 2);
+    float2 k = float2(kx_int, ky_int) * (2.0 * PI / Length);
+    
+    uint rng_state = id.x + id.y * N + (uint)(Length * 1000.0);
+    float2 xi = gaussian(rng_state);
+    
+    float amp = CalculateAmplitude(k);
+    float2 h0_k = xi * amp;
+    
+    H0_Texture[id.xy] = float4(h0_k.x, h0_k.y, 0.0, 0.0);
+}

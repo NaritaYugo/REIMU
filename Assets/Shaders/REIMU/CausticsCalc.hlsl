@@ -66,9 +66,8 @@ void GetCausticsAlpha_float(
     float c1 = lerp(c01, c11, fx);
     float raw_alpha = lerp(c0, c1, fz);
 
-    // 影と光の強さを別々に設定できるようにします
-    float shadow_intensity = 0.4; // 影の濃さ（今のまま）
-    float light_intensity  = 1.5; // 光のブースト量（ここを大きくする！）
+    float shadow_intensity = 0.4; // 影の濃さ
+    float light_intensity  = 1.5; // 光のブースト量
 
     float final_alpha;
     
@@ -77,11 +76,9 @@ void GetCausticsAlpha_float(
         final_alpha = 1.0 + (raw_alpha - 1.0) * shadow_intensity;
     } else {
         // 1.0以上（光の部分）の処理
-        // コースティクス特有の「鋭い光の線」を出したい場合は、ここで pow を使うのも非常に効果的です
         final_alpha = 1.0 + pow(raw_alpha - 1.0, 2.0) * light_intensity;
     }
 
-    // 影の下限は0.7で守りつつ、上限は思い切り高く設定します（例: 3.0 ～ 5.0）
     OutAlpha = clamp(final_alpha, 0.7, 3.0);
 }
 #endif

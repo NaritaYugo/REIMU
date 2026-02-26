@@ -9,7 +9,7 @@ Shader "REIMU/Splash"
         [HDR] _SplashColor("Splash Color", Color) = (0.9, 0.95, 1.0, 1.0)
         _Shininess ("Shininess (Specular)", Range(10.0, 256.0)) = 128.0 
         
-        // 【追加】速度による引き伸ばしの強さ
+        // 速度による引き伸ばしの強さ
         _StretchMultiplier ("Stretch Multiplier", Range(0.0, 0.5)) = 0.05
     }
     SubShader
@@ -133,7 +133,7 @@ Shader "REIMU/Splash"
                 float specular = pow(max(0.0, dot(viewNormal, halfVector)), _Shininess);
                 specular *= smoothstep(0.4, 0.0, distSq);
 
-                // --- 【変更】中心の透明化とフチの白発光（フレネルエッジ） ---
+                // --- 中心の透明化とフチの白発光（フレネルエッジ） ---
                 
                 // distを3乗して、フチ（1.0に近い部分）だけ急激に立ち上がるエッジ係数を作る
                 float edge = pow(dist, 3.0); 

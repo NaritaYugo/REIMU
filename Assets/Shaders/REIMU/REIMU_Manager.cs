@@ -57,7 +57,13 @@ public class REIMUManager : MonoBehaviour
     [Range(0.01f, 1.0f)] public float isoLevel = 0.2f; // メッシュ化のしきい値。出ない時はこれを下げます
     [Range(1, 3)] public int meshResolutionMultiplier = 2; // 表示の解像度
     [Range(1.0f, 5.0f)] public float foamSampleRadius = 3.0f;// 球面サンプリングの半径（マス目数）
-
+    
+    [Header("Dynamic SWE Allocation")]
+    public int sweTileSize = 32; // 1タイルあたりのセル数 (例: 32x32)
+    private int tileCountX;
+    private int tileCountY;
+    private int totalTiles;
+    
     // --- Compute Buffers ---
     private ComputeBuffer apicParticleBuffer;
     private ComputeBuffer deltaHBuffer;
@@ -96,6 +102,10 @@ public class REIMUManager : MonoBehaviour
     private ComputeBuffer activeParticleListBuffer;
     private ComputeBuffer activeParticleCountBuffer;
     private ComputeBuffer particleDispatchArgsBuffer;
+    // SWE
+    private ComputeBuffer activeSWETileListBuffer;     // Append (アクティブなタイルのIDリスト)
+    private ComputeBuffer activeSWETileCountBuffer;    // Raw (アクティブタイルの総数)
+    private ComputeBuffer sweTileDispatchArgsBuffer;   // IndirectArgs
 
     public ComputeBuffer GetAPICParticleBuffer() { return apicParticleBuffer; }
 
@@ -186,7 +196,14 @@ public class REIMUManager : MonoBehaviour
         // IndirectArguments 用のバッファ
         particleDispatchArgsBuffer = new ComputeBuffer(3, sizeof(uint), ComputeBufferType.IndirectArguments);
 
-        Debug.Log("REIMU: Buffers Initialized Successfully.");
+        // タイル分割数の計算
+        tileCountX = Mathf.CeilToInt((float)sweGridWidth / sweTileSize);
+        tileCountY = Mathf.CeilToInt((float)sweGridHeight / sweTileSize);
+        totalTiles = tileCountX * tileCountY;
+
+        activeSWETileListBuffer = new ComputeBuffer(totalTiles, sizeof(uint), ComputeBufferType.Append);
+        activeSWETileCountBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
+        sweTileDispatchArgsBuffer = new ComputeBuffer(3, sizeof(uint), ComputeBufferType.IndirectArguments);
     }
 
     private void BindBuffers()
@@ -679,7 +696,6 @@ public class REIMUManager : MonoBehaviour
         apicDivergenceBuffer?.Release();
         apicPressureBufferWrite?.Release();
         particleCounterBuffer?.Release();
-        // Voxelizer用
         voxelGridBuffer?.Release();
         voxelMomXBuffer?.Release();
         voxelMomYBuffer?.Release();
@@ -692,14 +708,12 @@ public class REIMUManager : MonoBehaviour
         voxelBlurBBuffer?.Release();
         voxelFinalDensityBuffer?.Release();
         voxelFoamFactorBuffer?.Release();
-        // PCG用
         pcgRBuffer?.Release();
         pcgPBuffer?.Release();
         pcgQBuffer?.Release();
         pcgPreconBuffer?.Release();
         pcgDotResultBuffer?.Release();
         pcgScalarsBuffer?.Release();
-
         activeParticleListBuffer?.Release();
         activeParticleCountBuffer?.Release();
         particleDispatchArgsBuffer?.Release();

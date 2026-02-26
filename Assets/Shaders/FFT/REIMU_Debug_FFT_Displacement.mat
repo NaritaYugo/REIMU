@@ -7,8 +7,8 @@ Material:
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_Name: REIMU_Splash
-  m_Shader: {fileID: 4800000, guid: cef2883e0769c6048aece1ef71a353d6, type: 3}
+  m_Name: REIMU_Debug_FFT_Displacement
+  m_Shader: {fileID: 4800000, guid: c38b17e17f74e394a85840de35e08614, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -22,20 +22,16 @@ Material:
   m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
-    m_TexEnvs: []
+    m_TexEnvs:
+    - _DisplacementMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _DensityThreshold: 0.2
-    - _FoamFactorThreshold: 0.5
-    - _MaxSize: 0.2
-    - _MinSize: 0.1
-    - _ScatterSpread: 0.2
-    - _Shininess: 128
-    - _SpeedForMin: 15
-    - _SpeedThreshold: 100
-    - _SplashSize: 0.05
-    - _StretchMultiplier: 0.05
+    - _Scale: 1
     m_Colors:
-    - _SplashColor: {r: 0.6773585, g: 1, b: 0.95045096, a: 1}
+    - _BaseColor: {r: 0, g: 0.19999996, b: 0.5, a: 1}
+    - _TipColor: {r: 0.6, g: 0.9, b: 1, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

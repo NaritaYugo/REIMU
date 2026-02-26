@@ -4,7 +4,6 @@
 struct SWECell { float h; float hu; float hv; float padding; };
 StructuredBuffer<SWECell> SWE_State_Buffer;
 
-// Shader Graphから呼ばれる関数 (Alpha判定を削除)
 void GetSWEData_float(
     float vertexID_In, 
     float swe_width_In, 
