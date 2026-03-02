@@ -155,7 +155,7 @@ Camera:
   m_GameObject: {fileID: 330585543}
   m_Enabled: 1
   serializedVersion: 2
-  m_ClearFlags: 1
+  m_ClearFlags: 2
   m_BackGroundColor: {r: 0.30860087, g: 0.3158708, b: 0.335849, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
@@ -425,16 +425,16 @@ MonoBehaviour:
   windSpeed: 12
   windDirection: 0
   fetch: 100000
-  peakEnhancement: 2.9
+  peakEnhancement: 3.3
   spreadStrength: 2
   lodAmplitudes:
-  - 0.25
   - 0.5
-  - 0.5
+  - 1
+  - 1
   jonswapShader: {fileID: 7200000, guid: 9edf463afc551e04f9cca7c0d8cd36c0, type: 3}
   timeDependentShader: {fileID: 7200000, guid: 204e43aa094876740a828d27e60d9c27, type: 3}
   ifftShader: {fileID: 7200000, guid: 311fa80ee1b65a146ad3019cac49057f, type: 3}
-  fftOceanMaterial: {fileID: 2100000, guid: 904d3e152db74364d879343e9c1741a8, type: 2}
+  debugMaterial: {fileID: 2100000, guid: 37ad42448562ac04c800f5ffb3af9bff, type: 2}
   displacementMaps: []
   mergedDisplacementMap: {fileID: 0}
 --- !u!114 &607178132
@@ -449,9 +449,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 15e54c8c955dd7b4abd8260bd2025a68, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::OceanGridGenerator
-  oceanMaterial: {fileID: 2100000, guid: 904d3e152db74364d879343e9c1741a8, type: 2}
-  resolution: 512
-  baseSize: 256
+  resolution: 250
+  size: 100
 --- !u!23 &607178133
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -477,7 +476,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 2100000, guid: 904d3e152db74364d879343e9c1741a8, type: 2}
+  - {fileID: 2100000, guid: 37ad42448562ac04c800f5ffb3af9bff, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -518,8 +517,8 @@ Transform:
   m_GameObject: {fileID: 607178130}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_LocalPosition: {x: 0, y: 15, z: 0}
+  m_LocalScale: {x: 10, y: 10, z: 10}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -537,9 +536,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FFTOceanTracker
   target: {fileID: 1183562802}
-  waterHeight: 0
-  size: 512
-  resolution: 256
+  waterHeight: 15
 --- !u!1 &634254212
 GameObject:
   m_ObjectHideFlags: 0
@@ -579,31 +576,31 @@ MonoBehaviour:
   dx_apic: 1
   rho: 1
   baseMass: 0.5
-  seaBottomHight: -3
   frThreshold: 1
   gradThreshold: 1.5
   laplacianThreshold: -2.5
   conversionRateMultiplier: 20
-  pushZMultiplier: 1
-  splashVelocityMultiplier: 1
+  pushZMultiplier: 0.5
+  splashVelocityMultiplier: 0.5
   horizontalMomentumTransfer: 0.3
   verticalMomentumToWave: 0.3
-  mouseRadius: 3
-  mouseForce: 200
+  mouseRadius: 5
+  mouseForce: 100
   coreCS: {fileID: 7200000, guid: 6b4a67fcb457e58479806d6223afaaab, type: 3}
   sweCS: {fileID: 7200000, guid: 2e97c6e85b96ab04d951d2fb27ad2c1c, type: 3}
   apicCS: {fileID: 7200000, guid: 43f88bce1c6b955409fc9a4bca89100d, type: 3}
   voxelizerCS: {fileID: 7200000, guid: 0f70e237d75d2884a80078eba58a1d37, type: 3}
-  sweSurfaceMaterial: {fileID: 0}
+  sweSurfaceMaterial: {fileID: 2100000, guid: 0d71e78a1cd8f724f9cd6d9b7d18217f, type: 2}
   fluidMeshMaterial: {fileID: 2100000, guid: 7f72cc365a227db4383058b7f35c172b, type: 2}
   splashMaterial: {fileID: 2100000, guid: e0d7229e29324794d9d8ea0913878b36, type: 2}
   seaBottomMaterial: {fileID: 2100000, guid: b4a61206cb0002e41b836340fb25ca9c, type: 2}
-  fftOceanMaterial: {fileID: 2100000, guid: 904d3e152db74364d879343e9c1741a8, type: 2}
+  fftOceanMaterial: {fileID: 0}
   splashSpeedThreshold: 100
   particleRadius: 1.5
   isoLevel: 0.2
   meshResolutionMultiplier: 2
   foamSampleRadius: 3
+  sweTileSize: 32
   fftOcean: {fileID: 607178131}
   trackTarget: {fileID: 1183562802}
   sweWorldOffset: {x: 0, y: 0}
@@ -764,7 +761,7 @@ GameObject:
   - component: {fileID: 1024537265}
   - component: {fileID: 1024537264}
   m_Layer: 0
-  m_Name: Landmark
+  m_Name: landmark
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -857,8 +854,8 @@ Transform:
   m_GameObject: {fileID: 1024537263}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -30.8, y: 15.1, z: 115.7}
-  m_LocalScale: {x: 10, y: 30, z: 10}
+  m_LocalPosition: {x: -30.8, y: 6.83047, z: 115.7}
+  m_LocalScale: {x: 10, y: 10, z: 10}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -899,7 +896,7 @@ MonoBehaviour:
   moveSpeed: 20
   turnSpeed: 50
   cameraTransform: {fileID: 330585546}
-  cameraOffset: {x: 0, y: 12, z: -30}
+  cameraOffset: {x: 0, y: 30, z: -70}
   cameraFollowSpeed: 5
 --- !u!143 &1183562798
 CharacterController:
@@ -1005,7 +1002,7 @@ MeshFilter:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1183562796}
-  m_Mesh: {fileID: 10202, guid: 0000000000000000e000000000000000, type: 0}
+  m_Mesh: {fileID: 10208, guid: 0000000000000000e000000000000000, type: 0}
 --- !u!4 &1183562802
 Transform:
   m_ObjectHideFlags: 0
@@ -1015,8 +1012,8 @@ Transform:
   m_GameObject: {fileID: 1183562796}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: -1.81589, y: 1.6, z: 63.9964}
-  m_LocalScale: {x: 3, y: 8, z: 3}
+  m_LocalPosition: {x: -1.81589, y: 8.36, z: 63.9964}
+  m_LocalScale: {x: 10, y: 10, z: 10}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -1034,7 +1031,7 @@ GameObject:
   - component: {fileID: 1240488747}
   - component: {fileID: 1240488746}
   m_Layer: 0
-  m_Name: Plane
+  m_Name: ground
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -1128,8 +1125,8 @@ Transform:
   m_GameObject: {fileID: 1240488745}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: -5, z: 0}
-  m_LocalScale: {x: 300, y: 300, z: 300}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 100, y: 100, z: 100}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}

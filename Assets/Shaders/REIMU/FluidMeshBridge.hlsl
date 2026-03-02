@@ -3,18 +3,17 @@
 
 struct Triangle { float3 v0, v1, v2; float3 norm; float3 velocity; };
 
-// C#から渡されるバッファ（これらはBlackboardに無いのでここで宣言）
 StructuredBuffer<Triangle> TriangleBuffer;
 StructuredBuffer<float> VoxelGrid_FoamFactor;
 
-// Shader Graphから呼び出される関数
-// 入力引数に _GridSize, _CellSize, _FoamFactorThreshold を追加しました
+// 【変更】引数に apic_world_offset_In を追加
 void GetFluidData_float(
     float vertexID_In, 
     float instanceID_In, 
     float3 GridSize_In, 
     float CellSize_In, 
     float FoamFactorThreshold_In,
+    float3 apic_world_offset_In, 
     out float3 OutPosition, 
     out float3 OutNormal, 
     out float OutFoam)
@@ -24,10 +23,14 @@ void GetFluidData_float(
 
     Triangle tri = TriangleBuffer[instanceID];
     
+    // OutPosition は Compute Shader 側ですでにワールド座標化されているのでそのまま出力
     OutPosition = (vertexID == 0) ? tri.v0 : ((vertexID == 1) ? tri.v1 : tri.v2);
     OutNormal = tri.norm;
 
-    int3 voxelIdx = int3(OutPosition / CellSize_In);
+    // 【修正】ワールド座標からオフセットを引いて、ボクセルのローカルインデックスを計算
+    float3 localPos = OutPosition - apic_world_offset_In;
+    int3 voxelIdx = int3(localPos / CellSize_In);
+    
     float foamVal = 1.0; 
     
     if (all(voxelIdx >= 0) && all(voxelIdx < GridSize_In)) {

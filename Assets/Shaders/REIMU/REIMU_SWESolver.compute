@@ -2,11 +2,10 @@
 #pragma kernel SublimateSWEtoAPIC
 #pragma kernel ApplyCondensation
 #pragma kernel InteractSWE
+#pragma kernel ShiftSWEGrid
 
 #include "REIMU_Common.cginc"
 
-// --- SWE用 バッファ ---
-// Ping-Pongバッファ（読み込み用と書き込み用）を用意して、並列処理時の参照不整合を防ぎます
 StructuredBuffer<SWECell> SWE_State_Read;
 RWStructuredBuffer<SWECell> SWE_State_Write;
 RWStructuredBuffer<APICParticle> APIC_Particle_Buffer;
@@ -15,9 +14,15 @@ StructuredBuffer<uint> Delta_H_Buffer;
 StructuredBuffer<uint> Delta_HU_Buffer;
 StructuredBuffer<uint> Delta_HV_Buffer;
 
-// --- 物理定数 ---
-static const float G = 9.81f;           // 重力加速度
-static const float H_MIN = 0.001f;      // ドライステート閾値 (1mm)
+uint sweTileSize; 
+uint2 tileCount;  
+
+AppendStructuredBuffer<uint> ActiveTileList_Write;
+StructuredBuffer<uint> ActiveTileList_Read;
+RWStructuredBuffer<uint> TileDispatchArgs;
+
+static const float G = 9.81f;           
+static const float H_MIN = 0.001f;      
 uint max_particles;
 float fr_threshold;
 float grad_threshold;
@@ -25,227 +30,216 @@ float laplacian_threshold;
 float conversion_rate_multiplier;
 float push_z_multiplier;
 float splash_velocity_multiplier;
-// --- マウスインタラクション用変数 ---
+int2 shift_amount;
+float sea_bottom_z;
+
 float2 mouse_pos;
 float2 mouse_dir;
 float mouse_radius;
 float mouse_force;
 int mouse_active;
 
-// 簡易的な擬似乱数生成器 (パーティクルの初期配置用)
-inline float random(float2 uv)
+Texture2D<float4> FFT_DispLOD0;
+Texture2D<float4> FFT_DispLOD1;
+Texture2D<float4> FFT_DispLOD2;
+float FFT_Size0, FFT_Size1, FFT_Size2;
+float2 swe_world_offset; 
+
+SamplerState sampler_LinearRepeat
 {
-    return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f);
+    Filter = MIN_MAG_MIP_LINEAR;
+    AddressU = Wrap;
+    AddressV = Wrap;
+};
+
+float3 GetFFTState(float2 worldPos)
+{
+    float2 uv0 = worldPos / FFT_Size0;
+    float2 uv1 = worldPos / FFT_Size1;
+    float2 uv2 = worldPos / FFT_Size2;
+
+    float4 d0 = FFT_DispLOD0.SampleLevel(sampler_LinearRepeat, uv0, 0);
+    float4 d1 = FFT_DispLOD1.SampleLevel(sampler_LinearRepeat, uv1, 0);
+    float4 d2 = FFT_DispLOD2.SampleLevel(sampler_LinearRepeat, uv2, 0);
+
+    float2 disp = float2(d0.x + d1.x + d2.x, d0.z + d1.z + d2.z);
+    float2 samplePos = worldPos - disp;
+    
+    uv0 = samplePos / FFT_Size0;
+    uv1 = samplePos / FFT_Size1;
+    uv2 = samplePos / FFT_Size2;
+
+    d0 = FFT_DispLOD0.SampleLevel(sampler_LinearRepeat, uv0, 0);
+    d1 = FFT_DispLOD1.SampleLevel(sampler_LinearRepeat, uv1, 0);
+    d2 = FFT_DispLOD2.SampleLevel(sampler_LinearRepeat, uv2, 0);
+
+    float h_fft = -sea_bottom_z + d0.y + d1.y + d2.y;
+    return float3(h_fft, 0.0f, 0.0f);
 }
 
-// --- MUSCL法用の MinMod リミッター ---
+float3 GetSWEStateOrFFT(int cx, int cy)
+{
+    int grid_w = (int)swe_grid_size.x;
+    int grid_h = (int)swe_grid_size.y;
+    if (cx < 0 || cx >= grid_w || cy < 0 || cy >= grid_h) 
+    {
+        float2 worldPos = swe_world_offset + float2(cx, cy) * dx_swe;
+        return GetFFTState(worldPos);
+    }
+    SWECell cell = SWE_State_Read[cy * grid_w + cx];
+    return float3(cell.h, cell.hu, cell.hv);
+}
+
+inline float random(float2 uv) { return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f); }
+
 inline float3 MinMod(float3 a, float3 b)
 {
     float3 sign_a = sign(a);
     float3 sign_b = sign(b);
     float3 min_abs = min(abs(a), abs(b));
-    // 符号が同じなら絶対値の小さい方を採用、異なれば0（極値では勾配を0にする）
     return 0.5f * (sign_a + sign_b) * min_abs;
 }
 
-// --- 速度抽出（非特異化） ---
 inline float2 GetVelocity(float h, float hu, float hv)
 {
     if (h < H_MIN) return float2(0.0f, 0.0f);
-    
-    // 極小水深でのゼロ除算・速度爆発を防ぐ
     float h2 = h * h;
     float den = h2 + max(h2, 1e-6f);
-    
     return float2((2.0f * h * hu) / den, (2.0f * h * hv) / den);
 }
 
-// --- 物理フラックス関数 ---
-// X方向のフラックス F(U) = (hu, h*u*u + 0.5*g*h*h, h*u*v)
-inline float3 ComputeFluxX(float h, float u, float v)
-{
-    float q = h * u;
-    return float3(q, q * u + 0.5f * G * h * h, q * v);
-}
+inline float3 ComputeFluxX(float h, float u, float v) { float q = h * u; return float3(q, q * u + 0.5f * G * h * h, q * v); }
+inline float3 ComputeFluxY(float h, float u, float v) { float q = h * v; return float3(q, q * u, q * v + 0.5f * G * h * h); }
 
-// Y方向のフラックス G(U) = (hv, h*v*u, h*v*v + 0.5*g*h*h)
-inline float3 ComputeFluxY(float h, float u, float v)
-{
-    float q = h * v;
-    return float3(q, q * u, q * v + 0.5f * G * h * h);
-}
-
-// --- HLL ソルバー (X方向) ---
 inline float3 HLL_FluxX(float3 UL, float3 UR)
 {
     float2 vL = GetVelocity(UL.x, UL.y, UL.z);
     float2 vR = GetVelocity(UR.x, UR.y, UR.z);
     float cL = sqrt(G * max(UL.x, H_MIN));
     float cR = sqrt(G * max(UR.x, H_MIN));
-
     float sL = min(vL.x - cL, vR.x - cR);
     float sR = max(vL.x + cL, vR.x + cR);
-
     float3 FL = ComputeFluxX(UL.x, vL.x, vL.y);
     float3 FR = ComputeFluxX(UR.x, vR.x, vR.y);
-
     if (sL >= 0.0f) return FL;
     else if (sR <= 0.0f) return FR;
     else return (sR * FL - sL * FR + sL * sR * (UR - UL)) / (sR - sL);
 }
 
-// --- HLL ソルバー (Y方向) ---
 inline float3 HLL_FluxY(float3 UB, float3 UT)
 {
     float2 vB = GetVelocity(UB.x, UB.y, UB.z);
     float2 vT = GetVelocity(UT.x, UT.y, UT.z);
     float cB = sqrt(G * max(UB.x, H_MIN));
     float cT = sqrt(G * max(UT.x, H_MIN));
-
     float sL = min(vB.y - cB, vT.y - cT);
     float sR = max(vB.y + cB, vT.y + cT);
-
     float3 FB = ComputeFluxY(UB.x, vB.x, vB.y);
     float3 FT = ComputeFluxY(UT.x, vT.x, vT.y);
-
     if (sL >= 0.0f) return FB;
     else if (sR <= 0.0f) return FT;
     else return (sR * FB - sL * FT + sL * sR * (UT - UB)) / (sR - sL);
 }
 
-// --- メインカーネル：時間積分と更新 ---
 [numthreads(8, 8, 1)]
 void UpdateSWE (uint3 id : SV_DispatchThreadID)
 {
-    // Y軸用の高さ変数も正しく定義（以前はgrid_wをY軸判定に使っていました）
     int grid_w = (int)swe_grid_size.x;
     int grid_h = (int)swe_grid_size.y; 
-
+    
+    // スレッドIDをそのままグリッド座標として扱う
     int ix = (int)id.x;
     int iy = (int)id.y;
-    if (ix >= grid_w || iy >= grid_h) return;
 
+    if (ix >= grid_w || iy >= grid_h) return;
     uint index = iy * grid_w + ix;
     SWECell current = SWE_State_Read[index];
 
-    float G = 9.81f;
+    // (ここから下は既存の流体計算ロジックと全く同じです)
+    float3 U_LL = GetSWEStateOrFFT(ix - 2, iy);
+    float3 U_L  = GetSWEStateOrFFT(ix - 1, iy);
+    float3 U_C  = float3(current.h, current.hu, current.hv);
+    float3 U_R  = GetSWEStateOrFFT(ix + 1, iy);
+    float3 U_RR = GetSWEStateOrFFT(ix + 2, iy);
 
-    // --- 近傍5セルの状態を取得 (float3への変換) ---
-    // X軸方向
-    SWECell cell_LL = SWE_State_Read[iy * grid_w + max(ix - 2, 0)];
-    SWECell cell_L  = SWE_State_Read[iy * grid_w + max(ix - 1, 0)];
-    SWECell cell_C  = SWE_State_Read[index];
-    SWECell cell_R  = SWE_State_Read[iy * grid_w + min(ix + 1, grid_w - 1)];
-    SWECell cell_RR = SWE_State_Read[iy * grid_w + min(ix + 2, grid_w - 1)];
+    float3 U_BB = GetSWEStateOrFFT(ix, iy - 2);
+    float3 U_B  = GetSWEStateOrFFT(ix, iy - 1);
+    float3 U_T  = GetSWEStateOrFFT(ix, iy + 1);
+    float3 U_TT = GetSWEStateOrFFT(ix, iy + 2);
 
-    float3 U_LL = float3(cell_LL.h, cell_LL.hu, cell_LL.hv);
-    float3 U_L  = float3(cell_L.h, cell_L.hu, cell_L.hv);
-    float3 U_C  = float3(cell_C.h, cell_C.hu, cell_C.hv);
-    float3 U_R  = float3(cell_R.h, cell_R.hu, cell_R.hv);
-    float3 U_RR = float3(cell_RR.h, cell_RR.hu, cell_RR.hv);
-
-    // 壁境界（ゴーストセル）の速度反転処理
-    if (ix == 0) { U_LL.y = -U_LL.y; U_L.y = -U_L.y; }
-    if (ix == grid_w - 1) { U_R.y = -U_R.y; U_RR.y = -U_RR.y; }
-
-    // Y軸方向
-    SWECell cell_BB = SWE_State_Read[max(iy - 2, 0) * grid_w + ix];
-    SWECell cell_B  = SWE_State_Read[max(iy - 1, 0) * grid_w + ix];
-    SWECell cell_T  = SWE_State_Read[min(iy + 1, grid_h - 1) * grid_w + ix];
-    SWECell cell_TT = SWE_State_Read[min(iy + 2, grid_h - 1) * grid_w + ix];
-
-    float3 U_BB = float3(cell_BB.h, cell_BB.hu, cell_BB.hv);
-    float3 U_B  = float3(cell_B.h, cell_B.hu, cell_B.hv);
-    float3 U_T  = float3(cell_T.h, cell_T.hu, cell_T.hv);
-    float3 U_TT = float3(cell_TT.h, cell_TT.hu, cell_TT.hv);
-
-    if (iy == 0) { U_BB.z = -U_BB.z; U_B.z = -U_B.z; }
-    if (iy == grid_h - 1) { U_T.z = -U_T.z; U_TT.z = -U_TT.z; }
-
-    // --- MUSCL空間再構築 (傾きの計算と補外) ---
-    // X方向の傾き
     float3 slopeX_L = MinMod(U_L - U_LL, U_C - U_L);
     float3 slopeX_C = MinMod(U_C - U_L,  U_R - U_C);
     float3 slopeX_R = MinMod(U_R - U_C,  U_RR - U_R);
 
-    // X方向の境界面における状態
     float3 UL_right_face = U_C + 0.5f * slopeX_C;
     float3 UR_right_face = U_R - 0.5f * slopeX_R;
-    
     float3 UL_left_face  = U_L + 0.5f * slopeX_L;
     float3 UR_left_face  = U_C - 0.5f * slopeX_C;
 
-    // Y方向の傾き
     float3 slopeY_B = MinMod(U_B - U_BB, U_C - U_B);
     float3 slopeY_C = MinMod(U_C - U_B,  U_T - U_C);
     float3 slopeY_T = MinMod(U_T - U_C,  U_TT - U_T);
 
-    // Y方向の境界面における状態
     float3 UB_top_face = U_C + 0.5f * slopeY_C;
     float3 UT_top_face = U_T - 0.5f * slopeY_T;
-
     float3 UB_bottom_face = U_B + 0.5f * slopeY_B;
     float3 UT_bottom_face = U_C - 0.5f * slopeY_C;
 
-    // --- フラックスの計算 ---
     float3 fluxX_right = HLL_FluxX(UL_right_face, UR_right_face);
     float3 fluxX_left  = HLL_FluxX(UL_left_face, UR_left_face);
-    
     float3 fluxY_up    = HLL_FluxY(UB_top_face, UT_top_face);
     float3 fluxY_down  = HLL_FluxY(UB_bottom_face, UT_bottom_face);
 
-    // --- 時間積分 (Euler法) ---
     float dtdx = dt_swe / dx_swe;
     float3 dU = -dtdx * (fluxX_right - fluxX_left) - dtdx * (fluxY_up - fluxY_down);
 
-    // 時間積分
     current.h  += dU.x;
     current.hu += dU.y;
     current.hv += dU.z;
     
-    // マイナス水深の保護
     if (current.h < 0.001f) {
-        current.h = 0.001f;
-        current.hu = 0.0f;
-        current.hv = 0.0f;
+        current.h = 0.001f; current.hu = 0.0f; current.hv = 0.0f;
     }
     
-    SWE_State_Write[index] = current;
-
     float new_h  = current.h;
     float new_hu = current.hu;
     float new_hv = current.hv;
 
-    // 底面摩擦項の適用（マニングの粗度係数近似による微小振動の減衰）
     float n_manning = 0.01f; 
     float2 vel = GetVelocity(new_h, new_hu, new_hv);
     float speed = length(vel);
-    // friction = g * n^2 * speed / h^(1/3)
     float friction = (G * n_manning * n_manning * speed) / (pow(max(new_h, H_MIN), 0.3333f) + EPSILON);
     
-    // 摩擦係数が大きすぎないようにクランプし、運動量を減衰
     float damp = max(0.0f, 1.0f - dt_swe * friction);
-    new_hu *= damp;
-    new_hv *= damp;
+    new_hu *= damp; new_hv *= damp;
 
-    // 速度が 10.0 を超えた分に対してのみ、強力な粘性抵抗を発生させる
-    // 波紋などの遅い動きには一切影響を与えず、見えない所で暴走エネルギーを熱として捨てる
-    float max_safe_speed = 10.0f; // この速度までは完全に自由
+    float max_safe_speed = 10.0f;
     if (speed > max_safe_speed) {
         float excess_speed = speed - max_safe_speed;
-        // 超過した速度の二乗に比例してブレーキをかける（空気抵抗と同じ物理モデル）
         float drag = max(0.0f, 1.0f - dt_swe * excess_speed * excess_speed * 0.05f);
-        new_hu *= drag;
-        new_hv *= drag;
+        new_hu *= drag; new_hv *= drag;
     }
 
-    // HLLC内で厳密にクランプし、負水深を防ぐ
+    float sponge_width = 12.0f; 
+    float dist_x = min((float)ix, (float)(grid_w - 1 - ix));
+    float dist_y = min((float)iy, (float)(grid_h - 1 - iy));
+    float dist = min(dist_x, dist_y);
+    float alpha = smoothstep(0.0f, 1.0f, dist / sponge_width);
+
+    float2 cellWorldPos = swe_world_offset + float2(ix, iy) * dx_swe;
+    float3 fft_state = GetFFTState(cellWorldPos);
+
+    new_h  = lerp(fft_state.x, new_h, alpha);
+
+    float vel_damp = lerp(0.95f, 1.0f, alpha); 
+    new_hu *= vel_damp;
+    new_hv *= vel_damp;
+
     SWECell nextState;
     nextState.h  = max(new_h, 0.0f);
     nextState.hu = (nextState.h > H_MIN) ? new_hu : 0.0f;
     nextState.hv = (nextState.h > H_MIN) ? new_hv : 0.0f;
     nextState.padding = 0.0f;
-
     SWE_State_Write[index] = nextState;
 }
 
@@ -255,31 +249,22 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
     int grid_w = (int)swe_grid_size.x;
     int ix = (int)id.x;
     int iy = (int)id.y;
-    if (ix >= grid_w || iy >= grid_w) return;
+    if (ix >= grid_w || iy >= (int)swe_grid_size.y) return;
 
     uint index = iy * grid_w + ix;
     SWECell current = SWE_State_Read[index];
 
-    // 境界マージン（のり代）の適用
-    int margin = 2;
+    int margin = 14; 
     if (ix < margin || ix >= grid_w - margin || iy < margin || iy >= grid_w - margin) {
-        SWE_State_Write[index] = current;
-        return;
+        SWE_State_Write[index] = current; return;
     }
 
     float h_min = 2.0f; 
     if (current.h <= h_min + 0.1f) {
-        SWE_State_Write[index] = current;
-        return;
+        SWE_State_Write[index] = current; return;
     }
 
-    // --- 1. マクロな波の抽出（2Dガウシアンフィルタ） ---
-    // 凝縮による局所的なスパイク（高周波ノイズ）を無視し、大きなうねりだけを抽出する
-    float smooth_h = 0.0f;
-    float smooth_hu = 0.0f;
-    float smooth_hv = 0.0f;
-    float weight_sum = 0.0f;
-
+    float smooth_h = 0.0f; float smooth_hu = 0.0f; float smooth_hv = 0.0f; float weight_sum = 0.0f;
     [unroll]
     for (int i = -1; i <= 1; i++) {
         [unroll]
@@ -287,22 +272,15 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
             int nx = clamp(ix + i, 0, grid_w - 1);
             int ny = clamp(iy + j, 0, grid_w - 1);
             SWECell n_swe = SWE_State_Read[ny * grid_w + nx];
-            
             float w = (i == 0 && j == 0) ? 0.25f : ((abs(i) + abs(j) == 1) ? 0.125f : 0.0625f);
-            smooth_h += n_swe.h * w;
-            smooth_hu += n_swe.hu * w;
-            smooth_hv += n_swe.hv * w;
-            weight_sum += w;
+            smooth_h += n_swe.h * w; smooth_hu += n_swe.hu * w; smooth_hv += n_swe.hv * w; weight_sum += w;
         }
     }
-    smooth_h /= weight_sum;
-    smooth_hu /= weight_sum;
-    smooth_hv /= weight_sum;
+    smooth_h /= weight_sum; smooth_hu /= weight_sum; smooth_hv /= weight_sum;
 
     float safe_dx = max(dx_swe, 0.001f);
-    float safe_h = max(smooth_h, 0.001f); // 判定には平滑化された水深を使用
+    float safe_h = max(smooth_h, 0.001f);
 
-    // --- 2. 近傍セル（平滑化用ではなく勾配計算用）もマクロな値を取得 ---
     SWECell cL = SWE_State_Read[iy * grid_w + max(ix - 1, 0)];
     SWECell cR = SWE_State_Read[iy * grid_w + min(ix + 1, grid_w - 1)];
     SWECell cD = SWE_State_Read[max(iy - 1, 0) * grid_w + ix];
@@ -311,39 +289,28 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
     float u_c = smooth_hu / safe_h;
     float v_c = smooth_hv / safe_h;
 
-    // --- 3. 幾何学・運動学クライテリアの計算 ---
     float dhdx = (cR.h - cL.h) / (2.0f * safe_dx);
     float dhdy = (cU.h - cD.h) / (2.0f * safe_dx);
     float grad_mag = sqrt(max(0.0f, dhdx * dhdx + dhdy * dhdy));
-
     float laplacian_h = (cL.h + cR.h + cD.h + cU.h - 4.0f * current.h) / (safe_dx * safe_dx);
     
     float speed = sqrt(max(0.0f, u_c * u_c + v_c * v_c));
-    float fr = speed / sqrt(9.81f * safe_h); // フルード数もマクロな波の速度から計算
+    float fr = speed / sqrt(9.81f * safe_h);
 
-    // --- 4. 物理ベースの昇華判定 ---
     bool is_breaking = false;
-    
-    // C#から渡された閾値を使用
     if (grad_mag > grad_threshold) is_breaking = true;          
     if (laplacian_h < laplacian_threshold) is_breaking = true;  
     if (fr > fr_threshold) is_breaking = true;               
 
-    // --- 5. APIC粒子への相転移（レート制御） ---
     if (is_breaking)
     {
-        // 変換スピードをインスペクタから調整
         float conversion_rate = 1.0f - exp(-conversion_rate_multiplier * dt_swe); 
         float delta_h = (current.h - h_min) * conversion_rate;
-        
-        if (delta_h < 0.05f) {
-            SWE_State_Write[index] = current;
-            return;
-        }
+        if (delta_h < 0.05f) { SWE_State_Write[index] = current; return; }
 
         float sublimated_mass = rho * delta_h * safe_dx * safe_dx; 
         uint count = (uint)max(1.0f, sublimated_mass / base_mass);
-        count = min(count, 50); // 1回あたりの生成上限も絞る
+        count = min(count, 50);
 
         float mass_per_particle = sublimated_mass / max(1.0f, (float)count);
 
@@ -353,13 +320,11 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
         
         uint start_idx;
         InterlockedAdd(ParticleCounter[0], count, start_idx);
-
         uint spawned_count = 0;
 
         for (uint i = 0; i < count; i++)
         {
             uint p_idx = (start_idx + i) % p_len;
-            
             if (APIC_Particle_Buffer[p_idx].mass > 0.001f) continue; 
 
             APICParticle p = (APICParticle)0;
@@ -370,34 +335,23 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
             float ry = frac(sin(ix * 93.989f  + (iy + i) * 67.345f) * 43758.5453f);
             float rz = frac(sin((ix * iy) * 45.123f + i * 13.567f) * 43758.5453f);
 
-            p.position.x = ((float)ix + rx) * dx_swe;
-            p.position.y = ((float)iy + ry) * dx_swe;
-
-            // 現在の水面(current.h)から、削り取る分(delta_h)だけ下がった位置を起点にする
-            float spawn_base_z = current.h - delta_h;
+            p.position.x = swe_world_offset.x + ((float)ix + rx) * dx_swe;
+            p.position.y = swe_world_offset.y + ((float)iy + ry) * dx_swe;
+            float spawn_base_z = sea_bottom_z + current.h - delta_h; 
             p.position.z = spawn_base_z + rz * delta_h;
 
-            // --- 追加部分：波の巻き込み（オーバーハング）を生成する前方ブースト ---
             float2 flow_dir = float2(u_c, v_c);
             float flow_speed = length(flow_dir);
-            // 速度ベクトルから波の進行方向を正規化して取得（ゼロ除算防止）
             if (flow_speed > 0.001f) flow_dir /= flow_speed;
             else flow_dir = float2(0.0f, 0.0f);
 
-            // 打ち上げ速度(w)を、重力波の伝播速度限界を超えないように物理的にクランプ
             float c_wave = sqrt(9.81f * safe_h);
-            
-            // 伝播速度(c_wave)をベースに、前方にダイブする力(ブースト)を計算
-            // ※0.8f の部分は固定値でも良いですし、後でインスペクタから調整できるように変数化しても良いです
             float curl_boost = c_wave * 0.8f; 
-
             float push_z = clamp(max(0.0f, -laplacian_h) * push_z_multiplier, 0.0f, c_wave);
 
-            // 水平方向(x, y)の初速にブースト(flow_dir * curl_boost)を乗せる
             p.velocity.x = u_c + flow_dir.x * curl_boost + (rx - 0.5f) * 2.0f * dx_swe; 
             p.velocity.y = v_c + flow_dir.y * curl_boost + (ry - 0.5f) * 2.0f * dx_swe;
             p.velocity.z = push_z + (rz * splash_velocity_multiplier) * c_wave; 
-
             p.c1 = float3(0,0,0); p.c2 = float3(0,0,0); p.c3 = float3(0,0,0);
 
             APIC_Particle_Buffer[p_idx] = p;
@@ -406,14 +360,11 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
 
         float actual_sublimated_mass = mass_per_particle * (float)spawned_count;
         float actual_delta_h = actual_sublimated_mass / (rho * safe_dx * safe_dx);
-        
         current.h -= actual_delta_h;
-        
         float remain_ratio = (current.h > 0.001f) ? (current.h / (current.h + actual_delta_h)) : 0.0f;
         current.hu *= remain_ratio;
         current.hv *= remain_ratio;
     }
-    
     SWE_State_Write[index] = current;
 }
 
@@ -424,40 +375,56 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID)
     uint index = id.y * swe_grid_size.x + id.x;
 
     SWECell current = SWE_State_Read[index];
-
-    // アトミック加算されたuint値をfloatに戻して加算
-    float delta_h = asfloat(Delta_H_Buffer[index]);
-    float delta_hu = asfloat(Delta_HU_Buffer[index]);
-    float delta_hv = asfloat(Delta_HV_Buffer[index]);
-
-    current.h  += delta_h;
-    current.hu += delta_hu;
-    current.hv += delta_hv;
-
+    current.h  += asfloat(Delta_H_Buffer[index]);
+    current.hu += asfloat(Delta_HU_Buffer[index]);
+    current.hv += asfloat(Delta_HV_Buffer[index]);
     SWE_State_Write[index] = current;
 }
 
-// --- マウスによる外力（運動量）の注入カーネル ---
 [numthreads(8, 8, 1)]
 void InteractSWE (uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)swe_grid_size.x || id.y >= (uint)swe_grid_size.y) return;
+
     uint index = id.y * swe_grid_size.x + id.x;
-    
     SWECell current = SWE_State_Read[index];
 
-    if (mouse_active == 1) 
+    // マウスがアクティブな時だけ力を加算する
+    if (mouse_active == 1)
     {
-        float2 cell_pos = float2(id.x, id.y) * dx_swe;
-        float dist = distance(cell_pos, mouse_pos);
-        if (dist < mouse_radius) 
+        float2 cell_world_pos = swe_world_offset + float2(id.x, id.y) * dx_swe;
+        if (distance(cell_world_pos, mouse_pos) < mouse_radius)
         {
-            float weight = 1.0f - (dist / mouse_radius);
-            
-            current.hu += mouse_dir.x * mouse_force * weight * dt_apic * current.h;
-            current.hv += mouse_dir.y * mouse_force * weight * dt_apic * current.h;
+            current.hu += mouse_dir.x * mouse_force * dt_swe;
+            current.hv += mouse_dir.y * mouse_force * dt_swe;
         }
     }
-    
+
+    // マウスの状態に関わらず、必ずWriteに書き戻す
     SWE_State_Write[index] = current;
+}
+
+[numthreads(8, 8, 1)]
+void ShiftSWEGrid(uint3 id : SV_DispatchThreadID)
+{
+    int grid_w = (int)swe_grid_size.x;
+    int grid_h = (int)swe_grid_size.y;
+    int ix = (int)id.x;
+    int iy = (int)id.y;
+    if (ix >= grid_w || iy >= grid_h) return;
+
+    int src_x = ix + shift_amount.x;
+    int src_y = iy + shift_amount.y;
+    uint dst_index = iy * grid_w + ix;
+    SWECell nextState;
+
+    if (src_x >= 0 && src_x < grid_w && src_y >= 0 && src_y < grid_h) {
+        nextState = SWE_State_Read[src_y * grid_w + src_x];
+    } else {
+        float2 worldPos = swe_world_offset + float2(ix, iy) * dx_swe;
+        float3 fft_state = GetFFTState(worldPos);
+        nextState.h = max(fft_state.x, 0.001f);
+        nextState.hu = 0.0f; nextState.hv = 0.0f; nextState.padding = 0.0f;
+    }
+    SWE_State_Write[dst_index] = nextState;
 }

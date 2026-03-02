@@ -36,6 +36,7 @@ Shader "REIMU/Splash"
 
             StructuredBuffer<APICParticle> APIC_Particle_Buffer;
             StructuredBuffer<float> VoxelGrid_FoamFactor; 
+            float3 apic_world_offset;
             float3 _GridSize;
             float _CellSize;
             float _MinSize;
@@ -58,10 +59,17 @@ Shader "REIMU/Splash"
                 uint cornerIndex = vertexID % 6;
 
                 APICParticle p = APIC_Particle_Buffer[particleIndex];
+                
+                // パーティクルのワールド座標（UnityのY-up空間に変換）
                 float3 unityPos = float3(p.position.x, p.position.z, p.position.y);
                 float3 unityVel = float3(p.velocity.x, p.velocity.z, p.velocity.y);
 
-                int3 idx = int3(unityPos / _CellSize);
+                float3 voxel_origin = apic_world_offset;
+                voxel_origin.y -= (_GridSize.y * _CellSize) * 0.5f;
+
+                float3 localPos = unityPos - voxel_origin;
+                int3 idx = int3(localPos / _CellSize);
+                
                 float foamVal = 1.0; 
                 
                 if (all(idx >= 0) && all(idx < _GridSize)) {

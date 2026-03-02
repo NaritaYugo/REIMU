@@ -33,10 +33,14 @@ Material:
   stringTagMap: {}
   disabledShaderPasses:
   - MOTIONVECTORS
-  m_LockedProperties: 
+  m_LockedProperties: _swe_world_offset
   m_SavedProperties:
     serializedVersion: 3
     m_TexEnvs:
+    - _CausticsTex:
+        m_Texture: {fileID: 2800000, guid: 1551ee3503d53194883e25a860ce6984, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     - unity_Lightmaps:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
@@ -51,10 +55,21 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
+    - FFT_Size0: 20
+    - FFT_Size1: 80
+    - FFT_Size2: 320
+    - FakeScale: 407.7
+    - FakeSpeed: 15.2
+    - _CausticsScale: 0.02
+    - _DistortionStrength: 0.02
+    - _FakeScale: 0.19
+    - _FakeSpeed: 3.34
     - _QueueControl: 0
     - _QueueOffset: 0
     - _dx_swe: 0.5
+    - _sea_bottom_z: -3
     - _swe_width: 128
-    m_Colors: []
+    m_Colors:
+    - _swe_world_offset: {r: -3, g: -54.5, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

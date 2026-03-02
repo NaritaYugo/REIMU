@@ -5,7 +5,6 @@ public class FFTOcean : MonoBehaviour
     [Header("FFT Settings")]
     public int resolution = 256;
     public int lodCount = 3;
-    // 仕様書に合わせたLODごとの空間スケール
     public float[] domainSizes = new float[] { 20.0f, 80.0f, 320.0f }; 
     
     [Header("JONSWAP Parameters")]
@@ -23,13 +22,13 @@ public class FFTOcean : MonoBehaviour
     public ComputeShader ifftShader;
 
     [Header("Debug Rendering")]
-    public Material debugMaterial;
+    public Material fftOceanMaterial;
 
     // --- カスケードごとのテクスチャ配列 ---
     private RenderTexture[] h0Textures;
     private RenderTexture[] spectrumH, spectrumDx, spectrumDz;
     private RenderTexture[] pingPongH, pingPongDx, pingPongDz;
-    private RenderTexture[] displacementMaps; // 各LODごとの変位
+    public RenderTexture[] displacementMaps; // 各LODごとの変位
 
     // 最終合成マップ
     public RenderTexture mergedDisplacementMap;
@@ -55,14 +54,14 @@ public class FFTOcean : MonoBehaviour
             RunIFFT(i);
         }
 
-        if (debugMaterial != null)
-        {
-            debugMaterial.SetTexture("_DispLOD0", displacementMaps[0]);
-            debugMaterial.SetTexture("_DispLOD1", displacementMaps[1]);
-            debugMaterial.SetTexture("_DispLOD2", displacementMaps[2]);
-            debugMaterial.SetFloat("_Size0", domainSizes[0]);
-            debugMaterial.SetFloat("_Size1", domainSizes[1]);
-            debugMaterial.SetFloat("_Size2", domainSizes[2]);
+        if (fftOceanMaterial != null)
+{
+            fftOceanMaterial.SetTexture("FFT_DispLOD0", displacementMaps[0]);
+            fftOceanMaterial.SetTexture("FFT_DispLOD1", displacementMaps[1]);
+            fftOceanMaterial.SetTexture("FFT_DispLOD2", displacementMaps[2]);
+            fftOceanMaterial.SetFloat("FFT_Size0", domainSizes[0]);
+            fftOceanMaterial.SetFloat("FFT_Size1", domainSizes[1]);
+            fftOceanMaterial.SetFloat("FFT_Size2", domainSizes[2]);
         }
     }
 
@@ -227,7 +226,7 @@ public class FFTOcean : MonoBehaviour
             ifftShader.SetTexture(kernelFinal, "Input_Dz", pingPongDz[lodIndex]);
         }
         ifftShader.SetFloat("LodAmplitude", lodAmplitudes[lodIndex]);
-        
+
         ifftShader.SetTexture(kernelFinal, "DisplacementMap", displacementMaps[lodIndex]);
         Dispatch(ifftShader, kernelFinal);
     }

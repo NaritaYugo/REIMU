@@ -1,84 +1,91 @@
 #ifndef CAUSTICS_CALC_INCLUDED
 #define CAUSTICS_CALC_INCLUDED
 
-struct SWECell { float h; float hu; float hv; float padding; };
-StructuredBuffer<SWECell> SWE_State_Buffer;
+#include "FFTBridge.hlsl"
 
-// 1つのグリッドポイント(ix, iy)における、コースティクスの生の強度を計算する関数
-float GetRawCausticsAtGrid(int ix, int iy, float seabedY, uint swe_width, float dx, float a, float2 grad_seabed)
+#ifndef SWE_CELL_DEFINED
+#define SWE_CELL_DEFINED
+#endif
+
+// 1. SWE側の水面高さと法線（傾き）を取得
+void GetSWEData(float localX, float localZ, float dx, uint swe_width, out float outHeight, out float3 outNormal)
 {
-    // グリッド範囲外の安全対策
-    if (ix < 1 || ix >= (int)swe_width - 1 || iy < 1 || iy >= (int)swe_width - 1) return 1.0;
+    float px = localX / dx - 0.5;
+    float pz = localZ / dx - 0.5;
+    int ix = clamp(floor(px), 1, swe_width - 2);
+    int iz = clamp(floor(pz), 1, swe_width - 2);
 
-    int idx_c = iy * swe_width + ix;
-    float f_c = SWE_State_Buffer[idx_c].h;
-    float f_r = SWE_State_Buffer[idx_c + 1].h;
-    float f_l = SWE_State_Buffer[idx_c - 1].h;
-    float f_u = SWE_State_Buffer[idx_c + swe_width].h;
-    float f_d = SWE_State_Buffer[idx_c - swe_width].h;
+    int idx_c = iz * swe_width + ix;
+    float h_c = SWE_State_Buffer[idx_c].h;
+    float h_r = SWE_State_Buffer[idx_c + 1].h;
+    float h_l = SWE_State_Buffer[idx_c - 1].h;
+    float h_u = SWE_State_Buffer[idx_c + swe_width].h;
+    float h_d = SWE_State_Buffer[idx_c - swe_width].h;
 
-    float df_dx = (f_r - f_l) / (2.0 * dx);
-    float df_dz = (f_u - f_d) / (2.0 * dx);
-    float2 grad_f = float2(df_dx, df_dz);
-
-    float laplacian_f = (f_r - 2.0 * f_c + f_l + f_u - 2.0 * f_c + f_d) / (dx * dx);
-
-    float H = max(0.0, f_c - seabedY);
-    float2 grad_H = grad_f - grad_seabed;
-
-    // あなたの導出した数式
-    return 1.0 - a * (H * laplacian_f + dot(grad_H, grad_f));
+    // 高さの勾配から法線（傾き）を計算
+    float3 normal = normalize(float3(-(h_r - h_l) / (2.0 * dx), 1.0, -(h_u - h_d) / (2.0 * dx)));
+    
+    outHeight = h_c;
+    outNormal = normal;
 }
 
-void GetCausticsAlpha_float(
-    float3 WorldPos, float3 WorldNormal, float swe_width_In, float dx_swe_In, float n1, float n2, out float OutAlpha)
+// 2. メイン関数（Shader Graphへのデータ受け渡し用）
+// ※引数の構成は今までと同じにしていますので、ノードの繋ぎ変えは最小限で済みます
+void GetUnifiedCaustics_float(
+    float3 WorldPos_seabed, 
+    float Size0, float Size1, float Size2,
+    float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, float sea_bottom_z_In,
+    float DistortionStrength,
+    float DepthFadeStrength,
+    out float2 OutUVDistortion, // テクスチャを歪ませるためのズレ幅
+    out float OutDepthFade)     // 深海でのフェードアウト用係数
 {
-    uint swe_width = (uint)swe_width_In;
     float dx = dx_swe_In;
-    float a = 1.0 - (n1 / n2);
+    float localX = WorldPos_seabed.x - swe_world_offset_In.x;
+    float localZ = WorldPos_seabed.z - swe_world_offset_In.y;
 
-    // 海底の勾配
-    float2 grad_seabed = float2(0.0, 0.0);
-    if (abs(WorldNormal.y) > 0.001) {
-        grad_seabed = float2(-WorldNormal.x / WorldNormal.y, -WorldNormal.z / WorldNormal.y);
-    }
-
-    // 現在の座標をグリッド単位に変換（-0.5してセル中心を基準にするのがバイリニアの定石）
-    float px = WorldPos.x / dx - 0.5;
-    float pz = WorldPos.z / dx - 0.5;
-
-    // 周囲4つのグリッドインデックス (左下を基準とする)
-    int ix = floor(px);
-    int iz = floor(pz);
-
-    // 小数点以下の重み (0.0 ～ 1.0)
-    float fx = frac(px);
-    float fz = frac(pz);
-
-    // 周囲4点のコースティクス強度を計算
-    float c00 = GetRawCausticsAtGrid(ix,     iz,     WorldPos.y, swe_width, dx, a, grad_seabed);
-    float c10 = GetRawCausticsAtGrid(ix + 1, iz,     WorldPos.y, swe_width, dx, a, grad_seabed);
-    float c01 = GetRawCausticsAtGrid(ix,     iz + 1, WorldPos.y, swe_width, dx, a, grad_seabed);
-    float c11 = GetRawCausticsAtGrid(ix + 1, iz + 1, WorldPos.y, swe_width, dx, a, grad_seabed);
-
-    // バイリニア補間で滑らかにブレンド
-    float c0 = lerp(c00, c10, fx);
-    float c1 = lerp(c01, c11, fx);
-    float raw_alpha = lerp(c0, c1, fz);
-
-    float shadow_intensity = 0.4; // 影の濃さ
-    float light_intensity  = 1.5; // 光のブースト量
-
-    float final_alpha;
+    // --- A: FFTの高さと法線 ---
+    float delta = dx;
+    float3 dispC, dispR, dispL, dispU, dispD;
     
-    if (raw_alpha < 1.0) {
-        // 1.0未満（影の部分）の処理
-        final_alpha = 1.0 + (raw_alpha - 1.0) * shadow_intensity;
-    } else {
-        // 1.0以上（光の部分）の処理
-        final_alpha = 1.0 + pow(raw_alpha - 1.0, 2.0) * light_intensity;
+    // 単純に現在の座標の十字サンプリングで法線を計算（大きな波S1, S2を使用）
+    GetFFTDisplacement_float(WorldPos_seabed, 0.0, Size1, Size2, dispC);
+    GetFFTDisplacement_float(WorldPos_seabed + float3(delta, 0, 0), 0.0, Size1, Size2, dispR);
+    GetFFTDisplacement_float(WorldPos_seabed + float3(-delta, 0, 0), 0.0, Size1, Size2, dispL);
+    GetFFTDisplacement_float(WorldPos_seabed + float3(0, 0, delta), 0.0, Size1, Size2, dispU);
+    GetFFTDisplacement_float(WorldPos_seabed + float3(0, 0, -delta), 0.0, Size1, Size2, dispD);
+
+    float base_depth = max(0.1, 0.0 - WorldPos_seabed.y);
+    float fft_height = base_depth + dispC.y;
+    float3 fft_normal = normalize(float3(-(dispR.y - dispL.y) / (2.0 * delta), 1.0, -(dispU.y - dispD.y) / (2.0 * delta)));
+
+    // --- B: SWEの高さと法線 ---
+    float swe_height = fft_height; // 初期値
+    float3 swe_normal = float3(0, 1, 0);
+    float seabedTotalSize = swe_width_In * dx_swe_In;
+    
+    if (localX > dx && localX < seabedTotalSize - dx && localZ > dx && localZ < seabedTotalSize - dx) 
+    {
+        GetSWEData(localX, localZ, dx, (uint)swe_width_In, swe_height, swe_normal);
     }
 
-    OutAlpha = clamp(final_alpha, 0.7, 3.0);
+    // --- C: ブレンド ---
+    float halfSize = seabedTotalSize * 0.5;
+    float distFromCenter = max(abs(localX - halfSize), abs(localZ - halfSize));
+    float blendStart = halfSize - 18.0 * dx; 
+    float blendEnd = halfSize - 6.0 * dx;
+    float sweWeight = 1.0 - smoothstep(blendStart, blendEnd, distFromCenter);
+
+    float final_height = lerp(fft_height, swe_height, sweWeight);
+    float3 final_normal = normalize(lerp(fft_normal, swe_normal, sweWeight));
+
+    // --- D: 歪みベクトルと減衰の出力 ---
+    float depth = max(0.1, final_height - WorldPos_seabed.y);
+    
+    // 法線のXZ成分（水面の傾き）に水深を掛けることで、深いほど光が大きくズレる物理現象を再現
+    OutUVDistortion = final_normal.xz * depth * DistortionStrength;
+    
+    // 水深による減衰
+    OutDepthFade = exp(-base_depth * DepthFadeStrength);
 }
 #endif
