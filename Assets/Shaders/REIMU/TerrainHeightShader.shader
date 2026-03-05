@@ -1,41 +1,43 @@
-Shader "Hidden/TerrainHeightShader"
+Shader "Hidden/TerrainHeightShaderURP"
 {
     SubShader
     {
-        Tags { "RenderType"="Opaque" }
+        Tags { "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" }
         Pass
         {
-            CGPROGRAM
+            HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            #include "UnityCG.cginc"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            struct appdata
+            struct Attributes
             {
-                float4 vertex : POSITION;
+                float4 positionOS : POSITION;
             };
 
-            struct v2f
+            struct Varyings
             {
-                float4 pos : SV_POSITION;
+                float4 positionCS : SV_POSITION;
                 float worldY : TEXCOORD0;
             };
 
-            v2f vert (appdata v)
+            Varyings vert(Attributes input)
             {
-                v2f o;
-                o.pos = UnityObjectToClipPos(v.vertex);
-                // 頂点のワールド座標のY（高さ）を取得
-                o.worldY = mul(unity_ObjectToWorld, v.vertex).y;
-                return o;
+                Varyings output;
+                // URP専用の座標変換
+                float3 positionWS = TransformObjectToWorld(input.positionOS.xyz);
+                output.positionCS = TransformWorldToHClip(positionWS);
+                // ワールドY座標（高さ）を保存
+                output.worldY = positionWS.y;
+                return output;
             }
 
-            float4 frag (v2f i) : SV_Target
+            float4 frag(Varyings input) : SV_Target
             {
-                // 高さをRチャンネル（赤色）にそのまま書き出す
-                return float4(i.worldY, 0, 0, 0);
+                // Rチャンネルに高さを書き込む
+                return float4(input.worldY, 0.0, 0.0, 0.0);
             }
-            ENDCG
+            ENDHLSL
         }
     }
 }

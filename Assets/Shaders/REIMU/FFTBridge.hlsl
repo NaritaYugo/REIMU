@@ -6,9 +6,11 @@ Texture2D<float4> FFT_DispLOD0; SamplerState samplerFFT_DispLOD0;
 Texture2D<float4> FFT_DispLOD1; SamplerState samplerFFT_DispLOD1;
 Texture2D<float4> FFT_DispLOD2; SamplerState samplerFFT_DispLOD2;
 
-struct SWECell { float h; float hu; float hv; float padding; };
+// ★追加：地形のハイトマップとサンプラー
+Texture2D<float> TerrainHeightMap; SamplerState samplerTerrainHeightMap;
+
+struct SWECell { float h; float hu; float hv; float foam; };
 StructuredBuffer<SWECell> SWE_State_Buffer;
-float sea_bottom_z;
 
 void GetFFTDisplacement_float(
     float3 WorldPos, 
@@ -26,7 +28,6 @@ void GetFFTDisplacement_float(
     float3 totalDisp = float3(d2.x, d2.y, d2.z);
 
     // LOD1: 400m〜500mの間で徐々にフェードアウトして消える
-    // (400m以下なら blend1=1.0、500m以上なら blend1=0.0 になる)
     float blend1 = 1.0 - saturate((dist - 400.0) / 100.0); 
     if (blend1 > 0.0)
     {
@@ -72,7 +73,7 @@ void GetClipmapMorph_float(float3 WorldPos, float3 ObjectPos, float MeshSize, fl
 {
     float targetGridSize = CurrentGridSize * 4.0;
     
-    // 【修正】ワールド座標ではなく、ObjectPosからのローカル座標でグリッドスナップさせる
+    // ワールド座標ではなく、ObjectPosからのローカル座標でグリッドスナップさせる
     float2 localXZ = WorldPos.xz - ObjectPos.xz;
     float2 snappedLocalXZ = round(localXZ / targetGridSize) * targetGridSize;
     
@@ -86,55 +87,189 @@ void GetClipmapMorph_float(float3 WorldPos, float3 ObjectPos, float MeshSize, fl
     MorphedPos = lerp(WorldPos, targetPos, morphAlpha);
 }
 
-// FFTの変位とSWEのシミュレーションを1つのメッシュ上で合成する関数
-void GetUnifiedOcean_float(
-    float3 WorldPos, 
-    float Size0, float Size1, float Size2, // FFT用
-    float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, // SWE用
-    float sea_bottom_z_In,
-    out float3 OutPosition)
+void GetSWEAndTerrainBilinear(int swe_width, float fx, float fz, out float outSWE, out float outTerrain)
 {
-    // 1. FFTの波（変位）を計算して取得する
-    // fftDisp には、X(横揺れ), Y(うねり), Z(横揺れ) が入っている
-    float3 fftDisp;
+    float shiftedX = fx - 0.5f;
+    float shiftedZ = fz - 0.5f;
+
+    // アンダーフローを防ぐためのintキャスト
+    int x0 = clamp((int)floor(shiftedX), 0, swe_width - 1);
+    int z0 = clamp((int)floor(shiftedZ), 0, swe_width - 1);
+    int x1 = clamp(x0 + 1, 0, swe_width - 1);
+    int z1 = clamp(z0 + 1, 0, swe_width - 1);
+
+    float tx = frac(shiftedX);
+    float tz = frac(shiftedZ);
+
+    // SWEの水深
+    float h00 = SWE_State_Buffer[z0 * swe_width + x0].h;
+    float h10 = SWE_State_Buffer[z0 * swe_width + x1].h;
+    float h01 = SWE_State_Buffer[z1 * swe_width + x0].h;
+    float h11 = SWE_State_Buffer[z1 * swe_width + x1].h;
+
+    // 地形（Loadを使ってSWEと全く同じピクセルを読む）
+    float b00 = TerrainHeightMap.Load(int3(x0, z0, 0)).r;
+    float b10 = TerrainHeightMap.Load(int3(x1, z0, 0)).r;
+    float b01 = TerrainHeightMap.Load(int3(x0, z1, 0)).r;
+    float b11 = TerrainHeightMap.Load(int3(x1, z1, 0)).r;
+
+    float h0 = lerp(h00, h10, tx);
+    float h1 = lerp(h01, h11, tx);
+    outSWE = lerp(h0, h1, tz);
+
+    float b0 = lerp(b00, b10, tx);
+    float b1 = lerp(b01, b11, tx);
+    outTerrain = lerp(b0, b1, tz);
+}
+
+// ==========================================================
+// 修正版：GetUnifiedOcean_float (アルファなし・地下へオフセット)
+// ==========================================================
+void GetUnifiedOcean_float(
+    float3 WorldPos, float Size0, float Size1, float Size2,
+    float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
+    float sea_bottom_z_In, 
+    out float3 OutPosition) // 出力はPositionのみに戻す
+{
+    float3 fftDisp = float3(0.0f, 0.0f, 0.0f);
     GetFFTDisplacement_float(WorldPos, Size0, Size1, Size2, fftDisp);
     
-    // 2. FFT領域用の座標（横揺れXZ ＋ うねりY をすべて足す）
-    float3 fftPos = WorldPos + fftDisp; 
-    
-    // 3. SWEのローカル座標とブレンド率の計算
     float localX = WorldPos.x - swe_world_offset_In.x;
     float localZ = WorldPos.z - swe_world_offset_In.y;
     float sweTotalSize = swe_width_In * dx_swe_In;
     
-    float blendMargin = 2.0; 
-    float blendX = smoothstep(0.0, blendMargin, localX) * smoothstep(0.0, blendMargin, sweTotalSize - localX);
-    float blendZ = smoothstep(0.0, blendMargin, localZ) * smoothstep(0.0, blendMargin, sweTotalSize - localZ);
-    float blendWeight = blendX * blendZ;
-    
-    if (blendWeight > 0.0)
+    float terrain_y = -30.0f; 
+    float sweDepth = 0.0f;
+
+    if (localX >= 0.0f && localX < sweTotalSize && localZ >= 0.0f && localZ < sweTotalSize) 
     {
-        // 4. SWEのバッファから水深を読み取る
-        uint vx = clamp((uint)round(localX / dx_swe_In), 0, (uint)swe_width_In - 1);
-        uint vy = clamp((uint)round(localZ / dx_swe_In), 0, (uint)swe_width_In - 1);
-        uint bufIdx = vy * (uint)swe_width_In + vx;
-        
-        float sweDepth = SWE_State_Buffer[bufIdx].h;
-        
-        // ★修正: 海底座標 + 水深 = 絶対的な水面Y座標
-        float absoluteSweHeight = sea_bottom_z_In + sweDepth; 
-        
-        // 5. 【ここで横揺れを足す！】
-        // XとZは「WorldPos ＋ FFTの横揺れ」、Yは「絶対的な水面Y座標」にする
-        float3 swePos = float3(WorldPos.x + fftDisp.x, absoluteSweHeight, WorldPos.z + fftDisp.z);
-        
-        // 境界付近は lerp で滑らかに繋ぐ
-        OutPosition = lerp(fftPos, swePos, blendWeight);
+        float fx = localX / dx_swe_In;
+        float fz = localZ / dx_swe_In;
+        int swe_w_int = (int)swe_width_In;
+        GetSWEAndTerrainBilinear(swe_w_int, fx, fz, sweDepth, terrain_y);
     }
-    else
+
+    float3 fftPos = WorldPos + fftDisp; 
+    float blendMargin = 2.0f; 
+    float blendX = smoothstep(0.0f, blendMargin, localX) * smoothstep(0.0f, blendMargin, sweTotalSize - localX);
+    float blendZ = smoothstep(0.0f, blendMargin, localZ) * smoothstep(0.0f, blendMargin, sweTotalSize - localZ);
+    float blendWeight = blendX * blendZ;
+
+    if (blendWeight > 0.0f) 
     {
-        // 領域外は完全にFFTの波
+        float absoluteSweHeight = terrain_y + sweDepth;
+        float sink_offset = smoothstep(0.05f, 0.0f, sweDepth) * 0.2f;
+        absoluteSweHeight -= sink_offset;
+
+        // 【最重要ポイント】地形の高さ(terrain_y)が 0.0m(海面) を超える場所ではFFTを消す
+        float altitude_fade = 1.0f - smoothstep(0.0f, 1.0f, terrain_y);
+        
+        // 浅瀬のフェード ＋ 標高フェード を掛け合わせる
+        float fft_blend = smoothstep(0.05f, 0.3f, sweDepth) * altitude_fade;
+        absoluteSweHeight += fftDisp.y * fft_blend;
+
+        float3 swePos = float3(WorldPos.x + fftDisp.x * fft_blend, absoluteSweHeight, WorldPos.z + fftDisp.z * fft_blend);
+        OutPosition = lerp(fftPos, swePos, blendWeight);
+    } 
+    else 
+    {
         OutPosition = fftPos;
     }
+}
+// ==========================================================
+// 修正版：GetUnifiedFoam_float (輪郭の泡残り解消)
+// ==========================================================
+void GetUnifiedFoam_float(
+    float3 WorldPos, 
+    float Size0, float Size1, float Size2,
+    float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
+    out float OutFoam)
+{
+    // --- 1. FFT領域の砕波 ---
+    float delta = 0.5f;
+    float3 dispX = float3(0.0f, 0.0f, 0.0f);
+    float3 dispZ = float3(0.0f, 0.0f, 0.0f);
+    float3 dispCenter = float3(0.0f, 0.0f, 0.0f);
+    
+    GetFFTDisplacement_float(WorldPos + float3(delta, 0.0f, 0.0f), Size0, Size1, Size2, dispX);
+    GetFFTDisplacement_float(WorldPos + float3(0.0f, 0.0f, delta), Size0, Size1, Size2, dispZ);
+    GetFFTDisplacement_float(WorldPos, Size0, Size1, Size2, dispCenter);
+    
+    float dDx = (dispX.x - dispCenter.x) / delta;
+    float dDz = (dispZ.z - dispCenter.z) / delta;
+    float jacobian = dDx + dDz; 
+    float fft_foam = smoothstep(-0.3f, -0.8f, jacobian); 
+
+    // --- 2. SWE領域の泡 ---
+    float localX = WorldPos.x - swe_world_offset_In.x;
+    float localZ = WorldPos.z - swe_world_offset_In.y;
+    float sweTotalSize = swe_width_In * dx_swe_In;
+    
+    float terrain_y = -1000.0f; 
+    float swe_foam = 0.0f;
+    float blendWeight = 0.0f;
+
+    float sweDepth = 0.0f; 
+
+    if (localX >= 0.0f && localX < sweTotalSize && localZ >= 0.0f && localZ < sweTotalSize) 
+    {
+        float fx = localX / dx_swe_In;
+        float fz = localZ / dx_swe_In;
+        
+        int swe_w_int = (int)swe_width_In;
+        GetSWEAndTerrainBilinear(swe_w_int, fx, fz, sweDepth, terrain_y);
+        
+        float blendMargin = 2.0f; 
+        float blendX = smoothstep(0.0f, blendMargin, localX) * smoothstep(0.0f, blendMargin, sweTotalSize - localX);
+        float blendZ = smoothstep(0.0f, blendMargin, localZ) * smoothstep(0.0f, blendMargin, sweTotalSize - localZ);
+        blendWeight = blendX * blendZ;
+
+        if (blendWeight > 0.0f) 
+        {
+            float shiftedX = fx - 0.5f;
+            float shiftedZ = fz - 0.5f;
+
+            int x0 = clamp((int)floor(shiftedX), 0, swe_w_int - 1);
+            int z0 = clamp((int)floor(shiftedZ), 0, swe_w_int - 1);
+            int x1 = clamp(x0 + 1, 0, swe_w_int - 1);
+            int z1 = clamp(z0 + 1, 0, swe_w_int - 1);
+
+            float tx = frac(shiftedX);
+            float tz = frac(shiftedZ);
+
+            float f00 = SWE_State_Buffer[z0 * swe_w_int + x0].foam;
+            float f10 = SWE_State_Buffer[z0 * swe_w_int + x1].foam;
+            float f01 = SWE_State_Buffer[z1 * swe_w_int + x0].foam;
+            float f11 = SWE_State_Buffer[z1 * swe_w_int + x1].foam;
+
+            float f0 = lerp(f00, f10, tx);
+            float f1 = lerp(f01, f11, tx);
+            swe_foam = lerp(f0, f1, tz);
+        }
+    }
+
+    float base_foam = saturate(fft_foam + (swe_foam * blendWeight));
+
+    // --- 3. 陸地との交差部分（Intersection）の泡 ---
+    float actual_wave_y = WorldPos.y + dispCenter.y; 
+    float water_depth = actual_wave_y - terrain_y;
+
+    float intersection_foam = 1.0f - smoothstep(0.0f, 2.0f, max(0.0f, water_depth));
+
+    if (water_depth < 0.0f) 
+    {
+        intersection_foam = 0.0f;
+    }
+
+    float final_foam = saturate(base_foam + intersection_foam);
+
+    // 浅瀬のフェードアウト処理（安全な変更点のみ維持）
+    if (blendWeight > 0.0f) 
+    {
+        float foam_fade = smoothstep(0.02f, 0.08f, sweDepth);
+        final_foam = lerp(final_foam, final_foam * foam_fade, blendWeight);
+    }
+
+    OutFoam = final_foam;
 }
 #endif

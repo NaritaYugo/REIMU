@@ -1,20 +1,20 @@
 Shader "REIMU/Splash"
 {
     Properties {
-        _MinSize ("Min Size (Isolated)", Range(0.01, 0.2)) = 0.05
-        _MaxSize ("Max Size (Near Mesh)", Range(0.1, 1.0)) = 0.3
-        _FoamFactorThreshold ("Foam Factor Threshold", Float) = 0.3 
-        _ScatterSpread ("Scatter Spread", Range(0.0, 0.2)) = 0.05
+        _MinSize ("Min Size (Low Density)", Range(0.005, 0.1)) = 0.02
+        _MaxSize ("Max Size (High Density)", Range(0.05, 0.5)) = 0.15
         
         [HDR] _SplashColor("Splash Color", Color) = (0.9, 0.95, 1.0, 1.0)
-        _Shininess ("Shininess (Specular)", Range(10.0, 256.0)) = 128.0 
-        
-        // 速度による引き伸ばしの強さ
         _StretchMultiplier ("Stretch Multiplier", Range(0.0, 0.5)) = 0.05
+        _SparkleProbability ("Sparkle Probability", Range(0.0, 1.0)) = 0.1
+        
+        [HideInInspector] _SpeedThreshold ("Speed Threshold", Float) = 0.5
     }
     SubShader
     {
         Tags { "RenderType"="Transparent" "Queue"="Transparent" "RenderPipeline"="UniversalPipeline" }
+        // ★加算ブレンド（Blend One One）も試す価値がありますが、
+        // ユーザー設定の「基本は透明」を守るため、通常の透過ブレンドを維持します。
         Blend SrcAlpha OneMinusSrcAlpha
         ZWrite Off  
         ZTest LEqual
@@ -27,31 +27,34 @@ Shader "REIMU/Splash"
             #pragma fragment frag
             #pragma target 5.0
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
 
+            // --- APICParticle構造体（変更なし） ---
             struct APICParticle {
                 float3 position; float mass; float3 velocity; float age;
                 float3 c1; float pad_c1; float3 c2; float pad_c2; float3 c3; float pad_c3;
             };
 
             StructuredBuffer<APICParticle> APIC_Particle_Buffer;
-            StructuredBuffer<float> VoxelGrid_FoamFactor; 
+            StructuredBuffer<float> VoxelGrid_FinalDensity; 
+            
             float3 apic_world_offset;
             float3 _GridSize;
             float _CellSize;
             float _MinSize;
             float _MaxSize;
-            float _FoamFactorThreshold;
-            float _ScatterSpread;
             float4 _SplashColor;
-            float _Shininess;
-            float _StretchMultiplier; // 【追加】
+            float _StretchMultiplier;
+            float _IsoLevel;
+            float _SpeedThreshold;
+            float _SparkleProbability;
 
             struct v2f { 
                 float4 pos : SV_POSITION; 
                 float2 uv : TEXCOORD0; 
+                float sparkle : TEXCOORD1; 
             };
 
+            // --- 頂点シェーダー（変更なし） ---
             v2f vert (uint vertexID : SV_VertexID) {
                 v2f o;
                 
@@ -60,102 +63,95 @@ Shader "REIMU/Splash"
 
                 APICParticle p = APIC_Particle_Buffer[particleIndex];
                 
-                // パーティクルのワールド座標（UnityのY-up空間に変換）
-                float3 unityPos = float3(p.position.x, p.position.z, p.position.y);
-                float3 unityVel = float3(p.velocity.x, p.velocity.z, p.velocity.y);
+                float3 origin_zup = apic_world_offset;
+                origin_zup.z -= (_GridSize.z * _CellSize) * 0.5f;
 
-                float3 voxel_origin = apic_world_offset;
-                voxel_origin.y -= (_GridSize.y * _CellSize) * 0.5f;
+                float3 localPos_zup = p.position - origin_zup;
+                int3 idx_zup = (int3)round(localPos_zup / _CellSize);
 
-                float3 localPos = unityPos - voxel_origin;
-                int3 idx = int3(localPos / _CellSize);
-                
-                float foamVal = 1.0; 
-                
-                if (all(idx >= 0) && all(idx < _GridSize)) {
-                    int flatIdx = idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y;
-                    foamVal = VoxelGrid_FoamFactor[flatIdx];
+                float density = 0.0;
+                int gx = (int)_GridSize.x;
+                int gy = (int)_GridSize.y;
+                int gz = (int)_GridSize.z;
+
+                if (idx_zup.x >= 0 && idx_zup.x < gx &&
+                    idx_zup.y >= 0 && idx_zup.y < gy &&
+                    idx_zup.z >= 0 && idx_zup.z < gz) {
+                    
+                    int flatIdx = idx_zup.x + idx_zup.y * gx + idx_zup.z * gx * gy;
+                    density = VoxelGrid_FinalDensity[flatIdx];
                 }
 
-                bool isSplash = (foamVal < _FoamFactorThreshold);
+                float3 unityPos = float3(p.position.x, p.position.z, p.position.y);
+                float3 unityVel = float3(p.velocity.x, p.velocity.z, p.velocity.y);
+                float speed_particle = length(unityVel);
                 
+                bool isSplash = (density < _IsoLevel * 0.8f) && (speed_particle > _SpeedThreshold);
+
                 if (p.mass <= 0.0f || !isSplash) {
                     o.pos = float4(0.0, -99999.0, 0.0, 1.0);
                     o.uv = float2(0.0, 0.0);
+                    o.sparkle = 0.0;
                     return o;
                 }
 
-                float densityFactor = saturate(foamVal / _FoamFactorThreshold);
-                float halfSize = lerp(_MinSize, _MaxSize, densityFactor) * 1.2f;
+                float densityRatio = saturate(density / max(_IsoLevel * 0.8f, 0.001f));
+                float halfSize = lerp(_MinSize, _MaxSize, densityRatio);
+
+                float sparkleAmount = 0.0;
+                float hash = frac(sin(particleIndex * 12.9898f) * 43758.5453f);
+                
+                if (hash < _SparkleProbability) {
+                    float phase = frac(sin(particleIndex * 33.33f) * 1333.33f) * 6.283f;
+                    float blinkSpeed = frac(sin(particleIndex * 77.77f) * 7777.77f) * 5.0f + 5.0f; 
+                    
+                    float blink = sin(_Time.y * blinkSpeed + phase);
+                    sparkleAmount = smoothstep(0.95f, 1.0f, blink); 
+                }
+                o.sparkle = sparkleAmount;
 
                 float2 uvArray[6] = {
                     float2(-1, -1), float2( 1, -1), float2(-1,  1), 
-                    float2(-1,  1), float2( 1, -1), float2( 1,  1)  
+                    float2(-1,  1), float2( 1, -1), float2(  1,  1)  
                 };
                 float2 uv = uvArray[cornerIndex];
                 o.uv = uv;
 
-                // --- 【変更】速度方向への引き伸ばし（Velocity Stretch） ---
                 float3 viewPos = TransformWorldToView(unityPos);
-                
-                // 速度ベクトルをビュー空間（カメラから見た2D平面）に変換
                 float3 viewVel = mul((float3x3)UNITY_MATRIX_V, unityVel);
-                float speed = length(viewVel.xy);
+                float speed_view = length(viewVel.xy);
                 
-                // 速度方向（Y軸）と、それに直交する方向（X軸）を計算
-                float2 dirY = (speed > 0.001f) ? (viewVel.xy / speed) : float2(0.0, 1.0);
+                float2 dirY = (speed_view > 0.001f) ? (viewVel.xy / speed_view) : float2(0.0, 1.0);
                 float2 dirX = float2(-dirY.y, dirY.x);
                 
-                // 速度に応じて縦（uv.y）方向だけを伸ばす
-                float stretch = 1.0f + speed * _StretchMultiplier;
-                
-                // 算出した軸を使ってオフセットを適用
+                float stretch = 1.0f + speed_view * _StretchMultiplier;
                 float2 offset = (dirX * uv.x + dirY * uv.y * stretch) * halfSize;
                 viewPos.xy += offset;
-                // -------------------------------------------------------------
 
                 o.pos = mul(UNITY_MATRIX_P, float4(viewPos, 1.0));
-                
                 return o;
             }
 
+            // --- フラグメントシェーダー（★ここを修正） ---
             float4 frag (v2f i) : SV_Target
             {
-                float distSq = dot(i.uv, i.uv);
-                if (distSq > 1.0f) discard;
+                // ==========================================
+                // ★ ベース形状：45度回転した正方形（ひし形）
+                // ==========================================
+                // abs(x) + abs(y) が 1.0 を超えたら破棄。
+                // 停止時は正方形(ひし形)になり、速度引き伸ばしがかかると
+                // 進行方向に鋭く尖ったレーザーや手裏剣のような形になります。
+                float shape = abs(i.uv.x) + abs(i.uv.y);
+                if (shape > 1.0f) discard;
 
-                float dist = sqrt(distSq);
-                float softAlpha = smoothstep(1.0, 0.8, dist); 
-
-                float z = sqrt(1.0f - distSq);
-                float3 viewNormal = normalize(float3(i.uv.x, i.uv.y, z));
-
-                Light mainLight = GetMainLight();
-                float3 viewLightDir = normalize(mul((float3x3)UNITY_MATRIX_V, mainLight.direction));
-
-                float wrap = 0.5;
-                float diffuse = max(0.0, (dot(viewNormal, viewLightDir) + wrap) / (1.0 + wrap));
-
-                float3 viewDir = float3(0.0, 0.0, 1.0);
-                float3 halfVector = normalize(viewLightDir + viewDir);
-                float specular = pow(max(0.0, dot(viewNormal, halfVector)), _Shininess);
-                specular *= smoothstep(0.4, 0.0, distSq);
-
-                // --- 中心の透明化とフチの白発光（フレネルエッジ） ---
+                float sparkleFactor = i.sparkle; 
                 
-                // distを3乗して、フチ（1.0に近い部分）だけ急激に立ち上がるエッジ係数を作る
-                float edge = pow(dist, 3.0); 
+                // 基本のアルファは「光の強さ」そのもの
+                float finalAlpha = sparkleFactor;
                 
-                // 中心は透明度10%、フチに行くほど100%不透明になる
-                float dropletAlpha = lerp(0.1, 1.0, edge);
-                float finalAlpha = softAlpha * dropletAlpha;
-
-                // フチの部分だけ強制的に白く発光させる（エッジグロウ）
-                float3 edgeGlow = float3(1.0, 1.0, 1.0) * edge;
-                
-                // 最終カラー合成（エッジの白さを加算）
-                float3 finalColor = _SplashColor.rgb * (diffuse * 0.5 + 0.2) + (specular * 2.0) + edgeGlow;
-                // -------------------------------------------------------------
+                // 光の強さ（Bloomがボケすぎないよう15倍程度に設定）
+                // 物足りなければ 20.0 や 30.0 に上げてください
+                float3 finalColor = _SplashColor.rgb * sparkleFactor * 15.0f;
 
                 return float4(finalColor, finalAlpha); 
             }

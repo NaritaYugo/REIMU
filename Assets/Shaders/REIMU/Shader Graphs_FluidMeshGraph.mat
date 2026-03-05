@@ -57,11 +57,15 @@ Material:
     m_Floats:
     - _CellSize: 0.5
     - _Distortion_Strength: 0.05
-    - _FoamFactorThreshold: 0
+    - _FoamFactorThreshold: 11.26
     - _QueueControl: 0
     - _QueueOffset: 0
+    - _dx_swe: 0.5
+    - _noiseSize: 15
+    - _swe_width: 128
     m_Colors:
     - _GridSize: {r: 128, g: 128, b: 128, a: 0}
-    - apic_world_offset: {r: -3, g: 0, b: -54.5, a: 0}
+    - _swe_world_offset: {r: 30.100006, g: 52.600006, b: 0, a: 0}
+    - apic_world_offset: {r: 4, g: -83.5, b: -3, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

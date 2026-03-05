@@ -2,7 +2,7 @@ struct SWECell {
     float h;
     float hu;
     float hv;
-    float padding;
+    float foam;
 };
 
 struct APICParticle {

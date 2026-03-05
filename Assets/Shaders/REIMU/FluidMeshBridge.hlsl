@@ -3,17 +3,19 @@
 
 struct Triangle { float3 v0, v1, v2; float3 norm; float3 velocity; };
 
-StructuredBuffer<Triangle> TriangleBuffer;
-StructuredBuffer<float> VoxelGrid_FoamFactor;
+struct SWECell {
+    float h; float hu; float hv; float foam;
+};
 
-// 【変更】引数に apic_world_offset_In を追加
+StructuredBuffer<Triangle> TriangleBuffer;
+StructuredBuffer<SWECell> SWE_State_Buffer;
+
 void GetFluidData_float(
     float vertexID_In, 
     float instanceID_In, 
-    float3 GridSize_In, 
-    float CellSize_In, 
-    float FoamFactorThreshold_In,
-    float3 apic_world_offset_In, 
+    float2 swe_world_offset_In, // 【追加】SWEのオフセット
+    float swe_width_In,         // 【追加】SWEのグリッド幅
+    float dx_swe_In,            // 【追加】SWEのセルサイズ
     out float3 OutPosition, 
     out float3 OutNormal, 
     out float OutFoam)
@@ -23,21 +25,26 @@ void GetFluidData_float(
 
     Triangle tri = TriangleBuffer[instanceID];
     
-    // OutPosition は Compute Shader 側ですでにワールド座標化されているのでそのまま出力
     OutPosition = (vertexID == 0) ? tri.v0 : ((vertexID == 1) ? tri.v1 : tri.v2);
     OutNormal = tri.norm;
 
-    // 【修正】ワールド座標からオフセットを引いて、ボクセルのローカルインデックスを計算
-    float3 localPos = OutPosition - apic_world_offset_In;
-    int3 voxelIdx = int3(localPos / CellSize_In);
+    // 【修正】3Dボクセル座標ではなく、描画座標(ワールドX,Z)から直接SWEの2Dインデックスを計算
+    float2 sweLocal = OutPosition.xz - swe_world_offset_In;
     
-    float foamVal = 1.0; 
+    int sweX = clamp((int)floor(sweLocal.x / dx_swe_In), 0, (int)swe_width_In - 1);
+    int sweY = clamp((int)floor(sweLocal.y / dx_swe_In), 0, (int)swe_width_In - 1);
     
-    if (all(voxelIdx >= 0) && all(voxelIdx < GridSize_In)) {
-        int flatIdx = voxelIdx.x + voxelIdx.y * GridSize_In.x + voxelIdx.z * GridSize_In.x * GridSize_In.y;
-        foamVal = VoxelGrid_FoamFactor[flatIdx]; 
+    int sweIdx = sweY * (int)swe_width_In + sweX;
+
+    // SWEグリッドの範囲内ならfoam値を読み取る
+    float base_foam = 0.0;
+    if (sweLocal.x >= 0.0 && sweLocal.x < swe_width_In * dx_swe_In &&
+        sweLocal.y >= 0.0 && sweLocal.y < swe_width_In * dx_swe_In) 
+    {
+        base_foam = SWE_State_Buffer[sweIdx].foam;
     }
 
-    OutFoam = 1.0 - smoothstep(0.0, FoamFactorThreshold_In, foamVal);
+    // 取得したfoamの値をそのまま出力（ShaderGraph側でノイズテクスチャと掛け合わせてパキッとさせます）
+    OutFoam = saturate(base_foam);
 }
 #endif

@@ -26,16 +26,17 @@ Material:
     m_Ints: []
     m_Floats:
     - _DensityThreshold: 0.2
-    - _FoamFactorThreshold: 0.5
-    - _MaxSize: 0.2
-    - _MinSize: 0.1
+    - _FoamFactorThreshold: 0.47
+    - _MaxSize: 0.1
+    - _MinSize: 0.005
     - _ScatterSpread: 0.2
-    - _Shininess: 128
+    - _Shininess: 167.71
+    - _SparkleProbability: 1
     - _SpeedForMin: 15
-    - _SpeedThreshold: 100
+    - _SpeedThreshold: 1
     - _SplashSize: 0.05
     - _StretchMultiplier: 0.05
     m_Colors:
-    - _SplashColor: {r: 0.6773585, g: 1, b: 0.95045096, a: 1}
+    - _SplashColor: {r: 0.8886792, g: 1, b: 0.977864, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

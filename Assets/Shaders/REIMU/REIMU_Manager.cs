@@ -19,7 +19,7 @@ public class REIMUManager : MonoBehaviour
     [Header("Fluid Settings")]
     public float rho = 1.0f;
     public float baseMass = 0.5f;
-    public float seaBottomHight = -15.0f;
+    public float seaBottomHight = 0f;
 
     [Header("Sublimation (SWE -> APIC) Settings")]
     public float frThreshold = 1.5f;
@@ -46,7 +46,6 @@ public class REIMUManager : MonoBehaviour
     public ComputeShader voxelizerCS;
 
     [Header("Rendering")]
-    public Material sweSurfaceMaterial;
     public Material fluidMeshMaterial;
     public Material splashMaterial;
     public Material seaBottomMaterial;
@@ -65,6 +64,13 @@ public class REIMUManager : MonoBehaviour
     public Transform trackTarget;
     public Vector2 sweWorldOffset = Vector2.zero; 
     public Vector3 apicWorldOffset = Vector3.zero;
+    
+    [Header("Environment Capture")]
+    public LayerMask terrainLayer;
+    
+    // 【変更】RenderTexture から Texture2D に変更
+    private Texture2D terrainHeightMap;
+    private bool isSWEInitialized = false;
 
     // --- Compute Buffers ---
     private ComputeBuffer apicParticleBuffer, deltaHBuffer, deltaHUBuffer, deltaHVBuffer;
@@ -73,12 +79,20 @@ public class REIMUManager : MonoBehaviour
     private ComputeBuffer apicDivergenceBuffer, apicPressureBufferWrite, particleCounterBuffer;
     private ComputeBuffer voxelGridBuffer, voxelMomXBuffer, voxelMomYBuffer, voxelMomZBuffer;
     private ComputeBuffer triangleBuffer, drawArgsBuffer, triTableBuffer, edgeTableBuffer;
-    private ComputeBuffer voxelBlurABuffer, voxelBlurBBuffer, voxelFinalDensityBuffer, voxelFoamFactorBuffer;
+    private ComputeBuffer voxelBlurABuffer, voxelBlurBBuffer, voxelFinalDensityBuffer;
     private ComputeBuffer pcgRBuffer, pcgPBuffer, pcgQBuffer, pcgPreconBuffer, pcgDotResultBuffer, pcgScalarsBuffer;
     private ComputeBuffer activeParticleListBuffer, activeParticleCountBuffer, particleDispatchArgsBuffer;
 
     void Start()
     {
+        if (trackTarget != null)
+        {
+            float targetBaseX = trackTarget.position.x - (sweGridWidth * dx_swe) * 0.5f;
+            float targetBaseZ = trackTarget.position.z - (sweGridHeight * dx_swe) * 0.5f;
+            sweWorldOffset = new Vector2(targetBaseX, targetBaseZ);
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, seaBottomHight);
+        }
+
         M_ratio = (int)(dx_apic / dx_swe);
         InitializeBuffers();
         BindBuffers();
@@ -103,11 +117,15 @@ public class REIMUManager : MonoBehaviour
         apicPressureBufferWrite = new ComputeBuffer(apicTotalCells, sizeof(float));
         particleCounterBuffer = new ComputeBuffer(1, sizeof(uint));
         particleCounterBuffer.SetData(new uint[] { 0 });
+
+        // GPUメモリの初期化
+        APICParticle[] emptyParticles = new APICParticle[maxParticles];
+        apicParticleBuffer.SetData(emptyParticles);
         
         SWECell[] initialSWE = new SWECell[sweTotalCells];
         for (int i = 0; i < sweTotalCells; i++)
         {
-            initialSWE[i] = new SWECell { h = Mathf.Abs(seaBottomHight), hu = 0, hv = 0, padding = 0 };
+            initialSWE[i] = new SWECell { h = 0f, hu = 0f, hv = 0f, padding = 0f };
         }
         sweStateBufferRead.SetData(initialSWE);
         sweStateBufferWrite.SetData(initialSWE);
@@ -132,18 +150,22 @@ public class REIMUManager : MonoBehaviour
         voxelBlurABuffer = new ComputeBuffer(totalVoxels, sizeof(float));
         voxelBlurBBuffer = new ComputeBuffer(totalVoxels, sizeof(float));
         voxelFinalDensityBuffer = new ComputeBuffer(totalVoxels, sizeof(float));
-        voxelFoamFactorBuffer = new ComputeBuffer(totalVoxels, sizeof(float));
         
         pcgRBuffer = new ComputeBuffer(apicTotalCells, sizeof(float));
         pcgPBuffer = new ComputeBuffer(apicTotalCells, sizeof(float));
         pcgQBuffer = new ComputeBuffer(apicTotalCells, sizeof(float));
         pcgPreconBuffer = new ComputeBuffer(apicTotalCells, sizeof(float));
-        pcgDotResultBuffer = new ComputeBuffer(1, sizeof(int));
+        pcgDotResultBuffer = new ComputeBuffer(1, sizeof(uint));
         pcgScalarsBuffer = new ComputeBuffer(5, sizeof(float));
 
         activeParticleListBuffer = new ComputeBuffer(maxParticles, sizeof(uint), ComputeBufferType.Append);
         activeParticleCountBuffer = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
         particleDispatchArgsBuffer = new ComputeBuffer(3, sizeof(uint), ComputeBufferType.IndirectArguments);
+
+        // --- 地形キャプチャ用テクスチャの初期化（Texture2Dに変更） ---
+        terrainHeightMap = new Texture2D(sweGridWidth, sweGridHeight, TextureFormat.RFloat, false);
+        terrainHeightMap.filterMode = FilterMode.Bilinear;
+        terrainHeightMap.wrapMode = TextureWrapMode.Clamp;
     }
 
     private void BindBuffers()
@@ -152,7 +174,7 @@ public class REIMUManager : MonoBehaviour
         foreach (var cs in shaders)
         {
             cs.SetInts("swe_grid_size", new int[] { sweGridWidth, sweGridHeight });
-            cs.SetInts("apic_grid_size", new int[] { apicGridWidth, apicGridHeight, apicGridDepth });
+            cs.SetInts("apic_grid_size", new int[] { apicGridWidth, apicGridDepth, apicGridHeight });
             cs.SetFloat("dx_swe", dx_swe);
             cs.SetFloat("dx_apic", dx_apic);
             cs.SetInt("M_ratio", M_ratio);
@@ -169,9 +191,16 @@ public class REIMUManager : MonoBehaviour
     void Update()
     {
         if (sweStateBufferRead == null) return;
+        if (trackTarget == null) return;
 
         float dt_apic = Mathf.Min(Time.deltaTime, 0.0333f);
-        float dt_swe_max = (0.2f * dx_swe) / (Mathf.Sqrt(9.81f * 20.0f) + 15.0f);
+        float expected_max_depth = 50.0f;
+        float expected_wave_speed = Mathf.Sqrt(9.81f * expected_max_depth);
+        
+        float expected_max_velocity = 15.0f; 
+        
+        float dt_swe_max = (0.20f * dx_swe) / (expected_wave_speed + expected_max_velocity); 
+        
         int subSteps = Mathf.CeilToInt(dt_apic / dt_swe_max);
         float dt_swe = dt_apic / subSteps;
 
@@ -185,14 +214,17 @@ public class REIMUManager : MonoBehaviour
             int shiftCellsX = Mathf.RoundToInt((targetBaseX - sweWorldOffset.x) / dx_swe);
             int shiftCellsY = Mathf.RoundToInt((targetBaseZ - sweWorldOffset.y) / dx_swe);
 
+            Vector2 nextSweWorldOffset = sweWorldOffset + new Vector2(shiftCellsX * dx_swe, shiftCellsY * dx_swe);
+            
             if (shiftCellsX != 0 || shiftCellsY != 0)
             {
-                sweWorldOffset.x += shiftCellsX * dx_swe;
-                sweWorldOffset.y += shiftCellsY * dx_swe;
-
+                sweWorldOffset = nextSweWorldOffset; 
+                CaptureTerrainHeight(); // 【変更】移動した時だけキャプチャを実行
+                
                 int shiftKernel = sweCS.FindKernel("ShiftSWEGrid");
                 sweCS.SetInts("shift_amount", new int[] { shiftCellsX, shiftCellsY });
                 sweCS.SetVector("swe_world_offset", sweWorldOffset);
+                
                 if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                     sweCS.SetTexture(shiftKernel, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
                     sweCS.SetTexture(shiftKernel, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
@@ -201,13 +233,35 @@ public class REIMUManager : MonoBehaviour
                     sweCS.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
                     sweCS.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
                 }
+                
+                sweCS.SetTexture(shiftKernel, "TerrainHeightMap", terrainHeightMap); 
                 sweCS.SetBuffer(shiftKernel, "SWE_State_Read", sweStateBufferRead);
                 sweCS.SetBuffer(shiftKernel, "SWE_State_Write", sweStateBufferWrite);
                 sweCS.Dispatch(shiftKernel, Mathf.CeilToInt(sweGridWidth / 8.0f), Mathf.CeilToInt(sweGridHeight / 8.0f), 1);
                 SwapSWEBuffers();
             }
+            
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, seaBottomHight);
+        }
 
-            apicWorldOffset = new Vector3(sweWorldOffset.x, 0f, sweWorldOffset.y);
+        if (!isSWEInitialized)
+        {
+            CaptureTerrainHeight();
+            sweCS.SetVector("swe_world_offset", sweWorldOffset);
+
+            int tgSWE_X_init = Mathf.CeilToInt(sweGridWidth / 8.0f);
+            int tgSWE_Y_init = Mathf.CeilToInt(sweGridHeight / 8.0f);
+            
+            int initKernel = sweCS.FindKernel("InitSWE");
+            sweCS.SetTexture(initKernel, "TerrainHeightMap", terrainHeightMap);
+            sweCS.SetBuffer(initKernel, "SWE_State_Write", sweStateBufferWrite);
+            sweCS.SetTexture(initKernel, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+            sweCS.SetTexture(initKernel, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+            sweCS.SetTexture(initKernel, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+            sweCS.Dispatch(initKernel, tgSWE_X_init, tgSWE_Y_init, 1);
+            
+            SwapSWEBuffers();
+            isSWEInitialized = true;
         }
 
         ComputeShader[] shaders = { coreCS, sweCS, apicCS };
@@ -258,9 +312,30 @@ public class REIMUManager : MonoBehaviour
         int tgSWE_X = Mathf.CeilToInt(sweGridWidth / 8.0f);
         int tgSWE_Y = Mathf.CeilToInt(sweGridHeight / 8.0f);
         int tgAPIC_X = Mathf.CeilToInt(apicGridWidth / 8.0f);
-        int tgAPIC_Y = Mathf.CeilToInt(apicGridHeight / 8.0f);
-        int tgAPIC_Z = Mathf.CeilToInt(apicGridDepth / 8.0f);
+        int tgAPIC_Y = Mathf.CeilToInt(apicGridDepth / 8.0f);  
+        int tgAPIC_Z = Mathf.CeilToInt(apicGridHeight / 8.0f); 
         int tgParticles = Mathf.CeilToInt(maxParticles / 64.0f);
+
+        int kBuildList = apicCS.FindKernel("BuildActiveParticleList");
+        if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
+            apicCS.SetTexture(kBuildList, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+            apicCS.SetTexture(kBuildList, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+            apicCS.SetTexture(kBuildList, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+            
+            int[] apicKernels = {
+                apicCS.FindKernel("CondenseParticles"),
+                apicCS.FindKernel("ComputeDivergence"),
+                apicCS.FindKernel("BuildDiag") 
+            };
+            foreach (var k in apicKernels) {
+                apicCS.SetTexture(k, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+                apicCS.SetTexture(k, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+                apicCS.SetTexture(k, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+                apicCS.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
+                apicCS.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
+                apicCS.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
+            }
+        }
 
         coreCS.Dispatch(coreCS.FindKernel("ClearIntermediateBuffers"), tgSWE_X, tgSWE_Y, 1);
         
@@ -274,7 +349,6 @@ public class REIMUManager : MonoBehaviour
         apicCS.Dispatch(kClearApic, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         activeParticleListBuffer.SetCounterValue(0); 
-        int kBuildList = apicCS.FindKernel("BuildActiveParticleList");
         apicCS.SetBuffer(kBuildList, "APIC_Particle_Buffer", apicParticleBuffer);
         apicCS.SetBuffer(kBuildList, "ActiveParticleList_Write", activeParticleListBuffer);
         apicCS.SetInt("max_particles", maxParticles);
@@ -289,9 +363,11 @@ public class REIMUManager : MonoBehaviour
         apicCS.SetBuffer(advectKernel, "ActiveParticleList_Read", activeParticleListBuffer);
         apicCS.SetBuffer(advectKernel, "ActiveParticleCount", activeParticleCountBuffer);
         apicCS.SetBuffer(advectKernel, "APIC_Particle_Buffer", apicParticleBuffer);
+        apicCS.SetTexture(advectKernel, "TerrainHeightMap", terrainHeightMap);
         apicCS.DispatchIndirect(advectKernel, particleDispatchArgsBuffer);
 
         int condenseKernel = apicCS.FindKernel("CondenseParticles");
+        apicCS.SetTexture(condenseKernel, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(condenseKernel, "ActiveParticleList_Read", activeParticleListBuffer);
         apicCS.SetBuffer(condenseKernel, "ActiveParticleCount", activeParticleCountBuffer);
         apicCS.SetBuffer(condenseKernel, "SWE_State_Read", sweStateBufferRead);
@@ -312,7 +388,6 @@ public class REIMUManager : MonoBehaviour
         sweCS.Dispatch(applyKernel, tgSWE_X, tgSWE_Y, 1);
         SwapSWEBuffers();
 
-        // ★ EvaluateActiveTiles周りの処理を全削除し、直接計算する
         if (mouseActive == 1) {
             int kInteract = sweCS.FindKernel("InteractSWE");
             sweCS.SetBuffer(kInteract, "SWE_State_Read", sweStateBufferRead);
@@ -320,9 +395,11 @@ public class REIMUManager : MonoBehaviour
             sweCS.Dispatch(kInteract, tgSWE_X, tgSWE_Y, 1);
             SwapSWEBuffers();
         }
-        
-        // ★ UpdateSWE を DispatchIndirect ではなく Dispatch で固定で回す
+
         int updateSWEKernel = sweCS.FindKernel("UpdateSWE");
+        sweCS.SetTexture(updateSWEKernel, "TerrainHeightMap", terrainHeightMap);
+        sweCS.SetTexture(sweCS.FindKernel("SublimateSWEtoAPIC"), "TerrainHeightMap", terrainHeightMap);
+        
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
             sweCS.SetTexture(updateSWEKernel, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
             sweCS.SetTexture(updateSWEKernel, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
@@ -371,6 +448,7 @@ public class REIMUManager : MonoBehaviour
         apicCS.Dispatch(normKernel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         int divKernel = apicCS.FindKernel("ComputeDivergence");
+        apicCS.SetTexture(divKernel, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(divKernel, "APIC_Grid_VelX", apicGridVelXBuffer);
         apicCS.SetBuffer(divKernel, "APIC_Grid_VelY", apicGridVelYBuffer);
         apicCS.SetBuffer(divKernel, "APIC_Grid_VelZ", apicGridVelZBuffer);
@@ -380,13 +458,16 @@ public class REIMUManager : MonoBehaviour
         apicCS.Dispatch(divKernel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         // --- PCG ---
-        pcgDotResultBuffer.SetData(new int[] { 0 });
+        pcgDotResultBuffer.SetData(new uint[] { 0 });
         int kBuildDiag = apicCS.FindKernel("BuildDiag");
         apicCS.SetBuffer(kBuildDiag, "APIC_Grid_Mass", apicGridMassBuffer);
         apicCS.SetBuffer(kBuildDiag, "PCG_Precon", pcgPreconBuffer);
+        apicCS.SetTexture(kBuildDiag, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(kBuildDiag, "SWE_State_Read", sweStateBufferRead);
         apicCS.Dispatch(kBuildDiag, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         int kInitCG = apicCS.FindKernel("InitCG");
+        apicCS.SetTexture(kInitCG, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(kInitCG, "APIC_Grid_Mass", apicGridMassBuffer);
         apicCS.SetBuffer(kInitCG, "APIC_Divergence", apicDivergenceBuffer);
         apicCS.SetBuffer(kInitCG, "APIC_Pressure_Write", apicPressureBufferWrite); 
@@ -397,6 +478,7 @@ public class REIMUManager : MonoBehaviour
         apicCS.Dispatch(kInitCG, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         int kDotPre = apicCS.FindKernel("DotProductPreconditioned");
+        apicCS.SetTexture(kDotPre, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(kDotPre, "APIC_Grid_Mass", apicGridMassBuffer);
         apicCS.SetBuffer(kDotPre, "PCG_R", pcgRBuffer);
         apicCS.SetBuffer(kDotPre, "PCG_Precon", pcgPreconBuffer);
@@ -407,15 +489,18 @@ public class REIMUManager : MonoBehaviour
         apicCS.SetBuffer(apicCS.FindKernel("ComputeInitialRTr"), "PCG_Scalars", pcgScalarsBuffer);
         apicCS.Dispatch(apicCS.FindKernel("ComputeInitialRTr"), 1, 1, 1);
 
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < 4; i++)
         {
             int kApplyA = apicCS.FindKernel("ApplyA");
             apicCS.SetBuffer(kApplyA, "APIC_Grid_Mass", apicGridMassBuffer);
             apicCS.SetBuffer(kApplyA, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kApplyA, "PCG_Q", pcgQBuffer);
+            apicCS.SetTexture(kApplyA, "TerrainHeightMap", terrainHeightMap);
+            apicCS.SetBuffer(kApplyA, "SWE_State_Read", sweStateBufferRead);
             apicCS.Dispatch(kApplyA, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
             int kDotGen = apicCS.FindKernel("DotProductGeneric");
+            apicCS.SetTexture(kDotGen, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(kDotGen, "APIC_Grid_Mass", apicGridMassBuffer);
             apicCS.SetBuffer(kDotGen, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kDotGen, "PCG_Q", pcgQBuffer);
@@ -427,6 +512,7 @@ public class REIMUManager : MonoBehaviour
             apicCS.Dispatch(apicCS.FindKernel("CalculateAlpha"), 1, 1, 1);
 
             int kUpdatePR = apicCS.FindKernel("UpdatePR");
+            apicCS.SetTexture(kUpdatePR, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(kUpdatePR, "APIC_Grid_Mass", apicGridMassBuffer);
             apicCS.SetBuffer(kUpdatePR, "APIC_Pressure_Write", apicPressureBufferWrite);
             apicCS.SetBuffer(kUpdatePR, "PCG_P", pcgPBuffer);
@@ -446,6 +532,7 @@ public class REIMUManager : MonoBehaviour
             apicCS.Dispatch(apicCS.FindKernel("CalculateBeta"), 1, 1, 1);
 
             int kUpdateD = apicCS.FindKernel("UpdateD");
+            apicCS.SetTexture(kUpdateD, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(kUpdateD, "APIC_Grid_Mass", apicGridMassBuffer);
             apicCS.SetBuffer(kUpdateD, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kUpdateD, "PCG_R", pcgRBuffer);
@@ -462,6 +549,7 @@ public class REIMUManager : MonoBehaviour
         apicCS.SetBuffer(g2pKernel, "APIC_Grid_VelZ", apicGridVelZBuffer);
         apicCS.SetBuffer(g2pKernel, "APIC_Pressure_Write", apicPressureBufferWrite);
         apicCS.SetBuffer(g2pKernel, "APIC_Particle_Buffer", apicParticleBuffer);
+        apicCS.SetTexture(g2pKernel, "TerrainHeightMap", terrainHeightMap);
         apicCS.DispatchIndirect(g2pKernel, particleDispatchArgsBuffer);
 
         // =========================================================
@@ -503,6 +591,16 @@ public class REIMUManager : MonoBehaviour
             voxelizerCS.DispatchIndirect(kernelSplat, particleDispatchArgsBuffer);
 
             int kernelSplatSWE = voxelizerCS.FindKernel("SplatSWE");
+
+            if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
+                voxelizerCS.SetTexture(kernelSplatSWE, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+                voxelizerCS.SetTexture(kernelSplatSWE, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+                voxelizerCS.SetTexture(kernelSplatSWE, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+                voxelizerCS.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
+                voxelizerCS.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
+                voxelizerCS.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
+            }
+            voxelizerCS.SetTexture(kernelSplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(kernelSplatSWE, "VoxelGrid_Density", voxelGridBuffer);
             voxelizerCS.SetBuffer(kernelSplatSWE, "SWE_State_Read", sweStateBufferRead);
             voxelizerCS.SetInts("swe_grid_size", new int[] { sweGridWidth, sweGridHeight });
@@ -524,12 +622,6 @@ public class REIMUManager : MonoBehaviour
             voxelizerCS.SetBuffer(kernelBlurZ, "VoxelGrid_FinalDensity", voxelFinalDensityBuffer);
             voxelizerCS.Dispatch(kernelBlurZ, tgVoxelX, tgVoxelY, tgVoxelZ);
 
-            int kernelFoam = voxelizerCS.FindKernel("ComputeFoamFactor");
-            voxelizerCS.SetBuffer(kernelFoam, "VoxelGrid_FinalDensity", voxelFinalDensityBuffer);
-            voxelizerCS.SetBuffer(kernelFoam, "VoxelGrid_FoamFactor", voxelFoamFactorBuffer);
-            voxelizerCS.SetFloat("_FoamSampleRadius", foamSampleRadius);
-            voxelizerCS.Dispatch(kernelFoam, tgVoxelX, tgVoxelY, tgVoxelZ);
-
             int kernelMC = voxelizerCS.FindKernel("MarchingCubes");
             triangleBuffer.SetCounterValue(0); 
             voxelizerCS.SetBuffer(kernelMC, "VoxelGrid_Density", voxelGridBuffer);
@@ -548,11 +640,11 @@ public class REIMUManager : MonoBehaviour
         // --- レンダリングへの送信 ---
         if (fluidMeshMaterial != null) {
             fluidMeshMaterial.SetBuffer("TriangleBuffer", triangleBuffer);
-            if (voxelFoamFactorBuffer != null) {
-                fluidMeshMaterial.SetVector("apic_world_offset", apicWorldOffset);
-                fluidMeshMaterial.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
-                fluidMeshMaterial.SetFloat("_CellSize", currentCellSize);
-                fluidMeshMaterial.SetBuffer("VoxelGrid_FoamFactor", voxelFoamFactorBuffer); 
+            if (sweStateBufferRead != null) {
+                fluidMeshMaterial.SetBuffer("SWE_State_Buffer", sweStateBufferRead);
+                fluidMeshMaterial.SetVector("_swe_world_offset", sweWorldOffset);
+                fluidMeshMaterial.SetFloat("_swe_width", sweGridWidth);
+                fluidMeshMaterial.SetFloat("_dx_swe", dx_swe);
             }
             Graphics.DrawProceduralIndirect(fluidMeshMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, drawArgsBuffer, 0);
         }
@@ -560,10 +652,15 @@ public class REIMUManager : MonoBehaviour
         if (splashMaterial != null && apicParticleBuffer != null) {
             splashMaterial.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
             splashMaterial.SetFloat("_CellSize", currentCellSize);
-            splashMaterial.SetBuffer("VoxelGrid_FoamFactor", voxelFoamFactorBuffer); 
             splashMaterial.SetFloat("_SpeedThreshold", splashSpeedThreshold);
             splashMaterial.SetBuffer("APIC_Particle_Buffer", apicParticleBuffer);
             splashMaterial.SetVector("apic_world_offset", apicWorldOffset);
+
+            if (voxelFinalDensityBuffer != null) {
+                splashMaterial.SetBuffer("VoxelGrid_FinalDensity", voxelFinalDensityBuffer);
+                splashMaterial.SetFloat("_IsoLevel", isoLevel);
+            }
+
             Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, maxParticles * 6, 1);
         }
 
@@ -607,6 +704,9 @@ public class REIMUManager : MonoBehaviour
                 fftOceanMaterial.SetBuffer("VoxelGrid_FinalDensity", voxelFinalDensityBuffer);
                 fftOceanMaterial.SetFloat("_IsoLevel", isoLevel);
             }
+            if (terrainHeightMap != null) {
+                fftOceanMaterial.SetTexture("TerrainHeightMap", terrainHeightMap);
+            }
         }
     }
 
@@ -615,6 +715,46 @@ public class REIMUManager : MonoBehaviour
         ComputeBuffer temp = sweStateBufferRead;
         sweStateBufferRead = sweStateBufferWrite;
         sweStateBufferWrite = temp;
+    }
+
+    // 【完全新規のRaycastキャプチャ関数】
+    private void CaptureTerrainHeight()
+    {
+        if (terrainHeightMap == null) return;
+        float[] heights = new float[sweGridWidth * sweGridHeight];
+        float startX = sweWorldOffset.x + dx_swe * 0.5f;
+        float startZ = sweWorldOffset.y + dx_swe * 0.5f;
+
+        // 【追加】現在の水面のY座標（必要なら public 変数等で定義してください。ここでは0fと仮定）
+        float waterSurfaceY = 0f; 
+        
+        // 【追加】SWEが破綻せず、波紋が綺麗に見える「最大水深（仮想水深）」
+        float maxSimulationDepth = 5.0f; 
+        float lowestSimulationBedY = waterSurfaceY - maxSimulationDepth;
+
+        for (int y = 0; y < sweGridHeight; y++)
+        {
+            for (int x = 0; x < sweGridWidth; x++)
+            {
+                float worldX = startX + x * dx_swe;
+                float worldZ = startZ + y * dx_swe;
+                Vector3 rayStart = new Vector3(worldX, 1000f, worldZ);
+                
+                if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, 2000f, terrainLayer))
+                {
+                    // 実際の地形がどれだけ深くても、lowestSimulationBedY (-5.0f) 以下にはしない
+                    heights[y * sweGridWidth + x] = Mathf.Max(hit.point.y, lowestSimulationBedY);
+                }
+                else
+                {
+                    // 陸地がない（Rayが当たらない）外洋も、仮想の海底 (-5.0f) に設定する
+                    heights[y * sweGridWidth + x] = lowestSimulationBedY; 
+                }
+            }
+        }
+        terrainHeightMap.SetPixelData(heights, 0);
+        terrainHeightMap.Apply();
+        Shader.SetGlobalTexture("TerrainHeightMap", terrainHeightMap);
     }
 
     void OnDisable()
@@ -631,10 +771,14 @@ public class REIMUManager : MonoBehaviour
         drawArgsBuffer?.Release(); triTableBuffer?.Release();
         edgeTableBuffer?.Release(); voxelBlurABuffer?.Release();
         voxelBlurBBuffer?.Release(); voxelFinalDensityBuffer?.Release();
-        voxelFoamFactorBuffer?.Release(); pcgRBuffer?.Release();
+        pcgRBuffer?.Release();
         pcgPBuffer?.Release(); pcgQBuffer?.Release();
         pcgPreconBuffer?.Release(); pcgDotResultBuffer?.Release();
         pcgScalarsBuffer?.Release(); activeParticleListBuffer?.Release();
         activeParticleCountBuffer?.Release(); particleDispatchArgsBuffer?.Release();
+        // Texture2Dの破棄
+        if (terrainHeightMap != null) {
+            Destroy(terrainHeightMap);
+        }
     }
 }

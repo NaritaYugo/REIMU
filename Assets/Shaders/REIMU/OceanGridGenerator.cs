@@ -16,7 +16,7 @@ public class ClipmapOceanManager : MonoBehaviour
         CreateLODMesh("LOD1_Ring", baseSize * 2f, baseSize);
 
         // LOD2: 遠景
-        CreateLODMesh("LOD2_Ring", baseSize * 16f, baseSize * 2f);
+        CreateLODMesh("LOD2_Ring", baseSize * 4f, baseSize * 2f);
     }
 
     void CreateLODMesh(string name, float size, float holeSize)
