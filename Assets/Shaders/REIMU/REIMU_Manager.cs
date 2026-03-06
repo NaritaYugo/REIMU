@@ -9,6 +9,7 @@ public class REIMUManager : MonoBehaviour
     public float dx_swe = 1.0f;
     private int M_ratio; 
     public int maxParticles = 1000000;
+    public int pcgIterations = 8;
 
     [Header("APIC Settings")]
     public int apicGridWidth = 64;
@@ -48,7 +49,6 @@ public class REIMUManager : MonoBehaviour
     [Header("Rendering")]
     public Material fluidMeshMaterial;
     public Material splashMaterial;
-    public Material seaBottomMaterial;
     public Material fftOceanMaterial;
     
     public float splashSpeedThreshold = 10.0f;
@@ -67,8 +67,6 @@ public class REIMUManager : MonoBehaviour
     
     [Header("Environment Capture")]
     public LayerMask terrainLayer;
-    
-    // 【変更】RenderTexture から Texture2D に変更
     private Texture2D terrainHeightMap;
     private bool isSWEInitialized = false;
 
@@ -219,7 +217,7 @@ public class REIMUManager : MonoBehaviour
             if (shiftCellsX != 0 || shiftCellsY != 0)
             {
                 sweWorldOffset = nextSweWorldOffset; 
-                CaptureTerrainHeight(); // 【変更】移動した時だけキャプチャを実行
+                CaptureTerrainHeight();
                 
                 int shiftKernel = sweCS.FindKernel("ShiftSWEGrid");
                 sweCS.SetInts("shift_amount", new int[] { shiftCellsX, shiftCellsY });
@@ -489,7 +487,7 @@ public class REIMUManager : MonoBehaviour
         apicCS.SetBuffer(apicCS.FindKernel("ComputeInitialRTr"), "PCG_Scalars", pcgScalarsBuffer);
         apicCS.Dispatch(apicCS.FindKernel("ComputeInitialRTr"), 1, 1, 1);
 
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < pcgIterations; i++)
         {
             int kApplyA = apicCS.FindKernel("ApplyA");
             apicCS.SetBuffer(kApplyA, "APIC_Grid_Mass", apicGridMassBuffer);
@@ -664,23 +662,6 @@ public class REIMUManager : MonoBehaviour
             Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, maxParticles * 6, 1);
         }
 
-        if (seaBottomMaterial != null && sweStateBufferRead != null) {
-            seaBottomMaterial.SetBuffer("SWE_State_Buffer", sweStateBufferRead);
-            seaBottomMaterial.SetFloat("_swe_width", sweGridWidth);
-            seaBottomMaterial.SetFloat("_dx_swe", dx_swe);
-            seaBottomMaterial.SetVector("_swe_world_offset", sweWorldOffset);
-            seaBottomMaterial.SetFloat("_sea_bottom_z", seaBottomHight); 
-
-            if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
-                seaBottomMaterial.SetTexture("FFT_DispLOD0", fftOcean.displacementMaps[0]);
-                seaBottomMaterial.SetTexture("FFT_DispLOD1", fftOcean.displacementMaps[1]);
-                seaBottomMaterial.SetTexture("FFT_DispLOD2", fftOcean.displacementMaps[2]);
-                seaBottomMaterial.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
-                seaBottomMaterial.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
-                seaBottomMaterial.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
-            }
-        }
-
         if (fftOceanMaterial != null)
         {
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
@@ -725,10 +706,9 @@ public class REIMUManager : MonoBehaviour
         float startX = sweWorldOffset.x + dx_swe * 0.5f;
         float startZ = sweWorldOffset.y + dx_swe * 0.5f;
 
-        // 【追加】現在の水面のY座標（必要なら public 変数等で定義してください。ここでは0fと仮定）
         float waterSurfaceY = 0f; 
         
-        // 【追加】SWEが破綻せず、波紋が綺麗に見える「最大水深（仮想水深）」
+        // SWEが破綻せず、波紋が綺麗に見える最大水深
         float maxSimulationDepth = 5.0f; 
         float lowestSimulationBedY = waterSurfaceY - maxSimulationDepth;
 

@@ -65,7 +65,7 @@ Material:
     - _swe_width: 128
     m_Colors:
     - _GridSize: {r: 128, g: 128, b: 128, a: 0}
-    - _swe_world_offset: {r: 30.100006, g: 52.600006, b: 0, a: 0}
+    - _swe_world_offset: {r: -82.7, g: -3.5999985, b: 0, a: 0}
     - apic_world_offset: {r: 4, g: -83.5, b: -3, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

@@ -121,15 +121,14 @@ void GetSWEAndTerrainBilinear(int swe_width, float fx, float fz, out float outSW
     float b1 = lerp(b01, b11, tx);
     outTerrain = lerp(b0, b1, tz);
 }
-
 // ==========================================================
-// 修正版：GetUnifiedOcean_float (アルファなし・地下へオフセット)
+// 修正版：GetUnifiedOcean_float
 // ==========================================================
 void GetUnifiedOcean_float(
     float3 WorldPos, float Size0, float Size1, float Size2,
     float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
     float sea_bottom_z_In, 
-    out float3 OutPosition) // 出力はPositionのみに戻す
+    out float3 OutPosition)
 {
     float3 fftDisp = float3(0.0f, 0.0f, 0.0f);
     GetFFTDisplacement_float(WorldPos, Size0, Size1, Size2, fftDisp);
@@ -158,14 +157,15 @@ void GetUnifiedOcean_float(
     if (blendWeight > 0.0f) 
     {
         float absoluteSweHeight = terrain_y + sweDepth;
-        float sink_offset = smoothstep(0.05f, 0.0f, sweDepth) * 0.2f;
+        
+        // 【修正】1.5mの極端な沈み込みを廃止。Zファイティング防止用の数cmのオフセットのみにする。
+        // 水深が 1cm(0.01) 未満の極めて薄い場所でのみ、最大 5cm(0.05) だけ地下に隠す
+        float sink_offset = smoothstep(0.01f, 0.00f, sweDepth) * 0.05f;
         absoluteSweHeight -= sink_offset;
 
-        // 【最重要ポイント】地形の高さ(terrain_y)が 0.0m(海面) を超える場所ではFFTを消す
+        // 地形が海面より高い場所ではFFTの揺れを無効化
         float altitude_fade = 1.0f - smoothstep(0.0f, 1.0f, terrain_y);
-        
-        // 浅瀬のフェード ＋ 標高フェード を掛け合わせる
-        float fft_blend = smoothstep(0.05f, 0.3f, sweDepth) * altitude_fade;
+        float fft_blend = smoothstep(0.01f, 0.1f, sweDepth) * altitude_fade;
         absoluteSweHeight += fftDisp.y * fft_blend;
 
         float3 swePos = float3(WorldPos.x + fftDisp.x * fft_blend, absoluteSweHeight, WorldPos.z + fftDisp.z * fft_blend);
@@ -176,6 +176,7 @@ void GetUnifiedOcean_float(
         OutPosition = fftPos;
     }
 }
+
 // ==========================================================
 // 修正版：GetUnifiedFoam_float (輪郭の泡残り解消)
 // ==========================================================
@@ -252,22 +253,41 @@ void GetUnifiedFoam_float(
 
     // --- 3. 陸地との交差部分（Intersection）の泡 ---
     float actual_wave_y = WorldPos.y + dispCenter.y; 
-    float water_depth = actual_wave_y - terrain_y;
-
-    float intersection_foam = 1.0f - smoothstep(0.0f, 2.0f, max(0.0f, water_depth));
-
-    if (water_depth < 0.0f) 
+    
+    if (blendWeight > 0.0f)
     {
-        intersection_foam = 0.0f;
+        float absoluteSweHeight = terrain_y + sweDepth;
+        // Vertexシェーダーと同じオフセットを適用
+        float sink_offset = smoothstep(0.01f, 0.00f, sweDepth) * 0.05f;
+        absoluteSweHeight -= sink_offset;
+        
+        float altitude_fade = 1.0f - smoothstep(0.0f, 1.0f, terrain_y);
+        float fft_blend = smoothstep(0.01f, 0.1f, sweDepth) * altitude_fade;
+        absoluteSweHeight += dispCenter.y * fft_blend;
+        
+        actual_wave_y = lerp(actual_wave_y, absoluteSweHeight, blendWeight);
+    }
+
+    float water_depth = actual_wave_y - terrain_y;
+    float intersection_foam = 0.0f;
+
+    if (water_depth > 0.0f) 
+    {
+        // 【修正】波打ち際の境界線を柔らかくする
+        // 0.0m〜0.05m(5cm)で泡をフワッと出し、そこから1.0mにかけて海側へ消していく
+        float foam_in = smoothstep(0.0f, 0.05f, water_depth);
+        float foam_out = 1.0f - smoothstep(0.05f, 1.0f, water_depth);
+        intersection_foam = foam_in * foam_out;
     }
 
     float final_foam = saturate(base_foam + intersection_foam);
 
-    // 浅瀬のフェードアウト処理（安全な変更点のみ維持）
+    // 【修正】無理なフェードアウトをやめ、水深がほぼゼロ（5mm以下）の陸地でのみ泡を確実に消去
     if (blendWeight > 0.0f) 
     {
-        float foam_fade = smoothstep(0.02f, 0.08f, sweDepth);
-        final_foam = lerp(final_foam, final_foam * foam_fade, blendWeight);
+        // 水深が 5mm 〜 1mm になるにつれて泡を消す（陸地に残る不自然な泡の除去）
+        float dry_cutoff = smoothstep(0.001f, 0.005f, sweDepth);
+        final_foam *= dry_cutoff;
     }
 
     OutFoam = final_foam;

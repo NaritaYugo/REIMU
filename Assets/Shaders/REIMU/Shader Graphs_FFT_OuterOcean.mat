@@ -79,7 +79,7 @@ Material:
     - _voronoiX: 28.27
     m_Colors:
     - _SWE_WorldOffset: {r: -34, g: 32, b: 0, a: 0}
-    - _swe_world_offset: {r: 30.100006, g: 52.600006, b: 0, a: 0}
+    - _swe_world_offset: {r: -82.7, g: -3.5999985, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &261136574170066110

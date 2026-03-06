@@ -312,17 +312,20 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     float2 slopeVX_C = MinMod(V_C - V_L,  V_R - V_C);
     float2 slopeVX_R = MinMod(V_R - V_C,  V_RR - V_R);
 
-    // 浅瀬の流速勾配のみ制限（水深の勾配は制限しない）
-    if (U_L.x < 0.01f || U_C.x < 0.01f || U_R.x < 0.01f) {
-        slopeVX_C = float2(0.0f, 0.0f);
-    }
-
     float2 slopeVY_B = MinMod(V_B - V_BB, V_C - V_B);
     float2 slopeVY_C = MinMod(V_C - V_B,  V_T - V_C);
     float2 slopeVY_T = MinMod(V_T - V_C,  V_TT - V_T);
 
-    if (U_B.x < 0.01f || U_C.x < 0.01f || U_T.x < 0.01f) {
+    // 【手法A追加】水深が極端に浅い場合（1cm未満）、全ての勾配をゼロにしてフラットな水面として扱う
+    if (U_C.x < 0.01f) {
+        slopeHX_C = 0.0f;
+        slopeHY_C = 0.0f;
+        slopeVX_C = float2(0.0f, 0.0f);
         slopeVY_C = float2(0.0f, 0.0f);
+    } else {
+        // 既存の流速制限（周囲が浅い場合）
+        if (U_L.x < 0.01f || U_R.x < 0.01f) slopeVX_C = float2(0.0f, 0.0f);
+        if (U_B.x < 0.01f || U_T.x < 0.01f) slopeVY_C = float2(0.0f, 0.0f);
     }
 
     // ==========================================================
@@ -399,6 +402,25 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     float3 fluxY_up    = HLL_FluxY(UB_top, UT_top);
     float3 fluxY_down  = HLL_FluxY(UB_bottom, UT_bottom);
 
+    // --- 【手法A コア】地形の壁判定によるフラックスの遮断 ---
+    // flux.x は質量(h*u または h*v)の移動。正なら右/上へ、負なら左/下へ流れる。
+    // 流れる先の地形高(B)が、流れる元の水面高(Eta)より高い場合は流れをゼロにする。
+
+    // X方向
+    if (fluxX_right.x > 0.0f && Eta_C <= B_R) fluxX_right = float3(0.0f, 0.0f, 0.0f); // C -> R をブロック
+    if (fluxX_right.x < 0.0f && Eta_R <= B_C) fluxX_right = float3(0.0f, 0.0f, 0.0f); // R -> C をブロック
+
+    if (fluxX_left.x > 0.0f && Eta_L <= B_C)  fluxX_left = float3(0.0f, 0.0f, 0.0f);  // L -> C をブロック
+    if (fluxX_left.x < 0.0f && Eta_C <= B_L)  fluxX_left = float3(0.0f, 0.0f, 0.0f);  // C -> L をブロック
+
+    // Y方向
+    if (fluxY_up.x > 0.0f && Eta_C <= B_T)    fluxY_up = float3(0.0f, 0.0f, 0.0f);    // C -> T をブロック
+    if (fluxY_up.x < 0.0f && Eta_T <= B_C)    fluxY_up = float3(0.0f, 0.0f, 0.0f);    // T -> C をブロック
+
+    if (fluxY_down.x > 0.0f && Eta_B <= B_C)  fluxY_down = float3(0.0f, 0.0f, 0.0f);  // B -> C をブロック
+    if (fluxY_down.x < 0.0f && Eta_C <= B_B)  fluxY_down = float3(0.0f, 0.0f, 0.0f);  // C -> B をブロック
+    // --------------------------------------------------------
+
     float dtdx = dt_swe / dx_swe;
     float3 dU = -dtdx * (fluxX_right - fluxX_left) - dtdx * (fluxY_up - fluxY_down);
 
@@ -468,6 +490,13 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
         new_hu *= (0.95f + 0.05f * alpha);
         new_hv *= (0.95f + 0.05f * alpha);
     }
+    // 【手法A追加】極めて薄い水膜（5mm未満）は、斜面での異常加速を防ぐため速度を完全に殺す
+    // 質量（new_h）は維持されるためブラックホール現象は起きず、水は陸地に張り付いて静止する
+    if (new_h < 0.005f) 
+    {
+        new_hu = 0.0f;
+        new_hv = 0.0f;
+    }
 
     // ==========================================================
     // 8. 泡 (Foam) の生成と移流・減衰
@@ -475,31 +504,42 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     float safe_dx_foam = max(dx_swe, 0.001f);
     float laplacian_Eta_foam = (Eta_L + Eta_R + Eta_T + Eta_B - 4.0f * Eta_C) / (safe_dx_foam * safe_dx_foam);
 
+    // ★修正1：地形の凸凹を波と誤認しないよう、水深が浅い場所（5cm未満）では泡の新規発生を殺すマスク
+    float foam_gen_mask = smoothstep(0.01f, 0.05f, new_h);
+
     // 砕波の泡と波打ち際の泡
     float crest_foam = (laplacian_Eta_foam < -1.5f) ? (-laplacian_Eta_foam * dt_swe * 0.5f) : 0.0f;
     float shore_foam = (new_h > 0.02f && new_h < 0.3f && speed > 0.8f) ? (speed * dt_swe * 1.5f) : 0.0f;
 
-    // 【追加】スポンジ層（アルファが1未満の領域）では、ブレンドによる人工的な大波と誤認して
-    // 大量の泡が出てしまうため、境界に近づくほど泡の「新規発生」を強力にミュートする
-    crest_foam *= pow(alpha, 4.0f); // 4乗して、境界付近の誤作動を完全に殺す
-    shore_foam *= alpha;
+    // マスクを掛けて、地形由来の偽の泡（ひび割れ）を完全に遮断
+    crest_foam *= pow(alpha, 4.0f) * foam_gen_mask; 
+    shore_foam *= alpha * foam_gen_mask;
 
-    // セミラグランジュ法による泡の移流（水流に乗せて泡を動かす）
+    // セミラグランジュ法による泡の移流
     float2 back_pos = float2(ix, iy) - vel * (dt_swe / dx_swe);
     int bx = clamp(round(back_pos.x), 0, grid_w - 1);
     int by = clamp(round(back_pos.y), 0, grid_h - 1);
     float advected_foam = SWE_State_Read[by * grid_w + bx].foam;
 
-    // 新規発生する泡（crest_foam, shore_foam）は中央付近でのみ発生し、
-    // 外周へは「移流（advected_foam）」によって自然に流れていくようになる
     float new_foam = advected_foam + crest_foam + shore_foam;
-    float foam_decay = exp(-0.5f * dt_swe); 
+    
+    // ★修正2：泡の減衰をより強力に（深い海ではゆっくり、浅瀬では一瞬で消す）
+    float base_decay = 0.5f; 
+    float shallow_decay_boost = smoothstep(0.05f, 0.00f, new_h) * 20.0f; 
+    float foam_decay = exp(-(base_decay + shallow_decay_boost) * dt_swe); 
     new_foam *= foam_decay;
 
+    // ★修正3：水深がほぼゼロ（1cm未満）の陸地に残った泡は、待たずに強制的に削り取って即座に隠す
+    if (new_h < 0.01f) 
+    {
+        // 毎秒 5.0 のペースで強制的に値をゼロに引き下げる
+        new_foam = max(0.0f, new_foam - dt_swe * 5.0f);
+    }
+
     SWECell nextState;
-    nextState.h  = new_h;
-    nextState.hu = new_hu;
-    nextState.hv = new_hv;
+    nextState.h  = max(new_h, 0.0f);
+    nextState.hu = (nextState.h > H_MIN) ? new_hu : 0.0f;
+    nextState.hv = (nextState.h > H_MIN) ? new_hv : 0.0f;
     nextState.foam = min(new_foam, 5.0f);
     SWE_State_Write[index] = nextState;
 }
