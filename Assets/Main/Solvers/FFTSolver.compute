@@ -1,0 +1,220 @@
+#pragma kernel InitJonswap
+#pragma kernel UpdateTimeSpectrum
+#pragma kernel IFFT_Horizontal
+#pragma kernel IFFT_Vertical
+#pragma kernel IFFT_Finalize
+
+#define PI 3.14159265359
+
+// ==========================================
+// 共通の変数
+// ==========================================
+uint N;
+float Length;
+float Gravity;
+float Time;
+
+// ==========================================
+// 数学・複素数ユーティリティ
+// ==========================================
+float2 MultiplyComplex(float2 a, float2 b) {
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+// ==========================================
+// 1. JONSWAP 初期スペクトル生成
+// ==========================================
+RWTexture2D<float4> H0_Texture;
+float WindSpeed;
+float WindDirection;
+float Fetch;
+float PeakEnhancement;
+float SpreadStrength;
+
+uint pcg_hash(uint seed) {
+    uint state = seed * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float rand(inout uint rng_state) {
+    rng_state = pcg_hash(rng_state);
+    return float(rng_state) / 4294967296.0;
+}
+
+float2 gaussian(inout uint rng_state) {
+    float u1 = max(1e-6, rand(rng_state));
+    float u2 = rand(rng_state);
+    float r = sqrt(-2.0 * log(u1));
+    float theta = 2.0 * PI * u2;
+    return float2(r * cos(theta), r * sin(theta));
+}
+
+float JONSWAP(float omega) {
+    float fetch_g = max(0.001, Fetch * Gravity);
+    float ws_fetch = max(0.001, WindSpeed * Fetch);
+    
+    float alpha = 0.076 * pow(abs(WindSpeed * WindSpeed / fetch_g), 0.22);
+    float wp = 22.0 * pow(abs(Gravity * Gravity / ws_fetch), 0.33333);
+    
+    float sigma = (omega <= wp) ? 0.07 : 0.09;
+    float denominator = max(0.0001, 2.0 * sigma * sigma * wp * wp);
+    float r = exp(-((omega - wp) * (omega - wp)) / denominator);
+    
+    float s = (alpha * Gravity * Gravity / pow(abs(omega), 5.0)) * exp(-1.25 * pow(abs(wp / omega), 4.0));
+    return s * pow(abs(PeakEnhancement), r);
+}
+
+float DirectionalSpread(float angle) {
+    float dTheta = angle - WindDirection;
+    dTheta = dTheta - 2.0 * PI * floor((dTheta + PI) / (2.0 * PI));
+    return pow(abs(cos(dTheta * 0.5)), 2.0 * SpreadStrength);
+}
+
+float CalculateAmplitude(float2 k) {
+    float k_length = length(k);
+    if (k_length < 0.001) return 0.0;
+    
+    float omega = sqrt(Gravity * k_length);
+    float dwdk = Gravity / (2.0 * omega);
+    float S_k = JONSWAP(omega) * dwdk / k_length;
+    
+    float angle = atan2(k.y, k.x);
+    float D_theta = DirectionalSpread(angle);
+    
+    float dK = (2.0 * PI) / Length;
+    return sqrt(S_k * D_theta) * dK * 0.7071067;
+}
+
+[numthreads(8, 8, 1)]
+void InitJonswap(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= N || id.y >= N) return;
+    
+    int kx_int = (int)id.x - (int)(N / 2);
+    int ky_int = (int)id.y - (int)(N / 2);
+    float2 k = float2(kx_int, ky_int) * (2.0 * PI / Length);
+    
+    uint rng_state = id.x + id.y * N + (uint)(Length * 1000.0);
+    float2 xi = gaussian(rng_state);
+    
+    float amp = CalculateAmplitude(k);
+    float2 h0_k = xi * amp;
+    
+    H0_Texture[id.xy] = float4(h0_k.x, h0_k.y, 0.0, 0.0);
+}
+
+// ==========================================
+// 2. 時間発展 (Time Evolution)
+// ==========================================
+Texture2D<float4> H0_Tex_Read; // H0_Textureは上がRWなのでエイリアスとして使うか直接H0_Textureを読む
+RWTexture2D<float2> OutH_Spectrum;
+RWTexture2D<float2> OutDx_Spectrum;
+RWTexture2D<float2> OutDz_Spectrum;
+
+[numthreads(8, 8, 1)]
+void UpdateTimeSpectrum(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= N || id.y >= N) return;
+
+    int kx_int = (int)id.x - (int)(N / 2);
+    int ky_int = (int)id.y - (int)(N / 2);
+    float2 k_vec = float2(kx_int, ky_int) * (2.0 * PI / Length);
+    float k_len = length(k_vec);
+
+    if (k_len < 0.0001) {
+        OutH_Spectrum[id.xy] = float2(0.0, 0.0);
+        OutDx_Spectrum[id.xy] = float2(0.0, 0.0);
+        OutDz_Spectrum[id.xy] = float2(0.0, 0.0);
+        return;
+    }
+
+    uint minus_ix = (N - id.x) % N;
+    uint minus_iy = (N - id.y) % N;
+    
+    float2 h0_k = H0_Texture[id.xy].xy;
+    float2 h0_minus_k = H0_Texture[uint2(minus_ix, minus_iy)].xy;
+
+    float omega = sqrt(Gravity * k_len);
+    float phase = -omega * Time;
+    float c = cos(phase);
+    float s = sin(phase);
+    float2 exp_iwt = float2(c, s);
+    float2 exp_minus_iwt = float2(c, -s);
+
+    float2 h0_minus_k_conj = float2(h0_minus_k.x, -h0_minus_k.y);
+    float2 h_k_t = MultiplyComplex(h0_k, exp_iwt) + MultiplyComplex(h0_minus_k_conj, exp_minus_iwt);
+    
+    OutH_Spectrum[id.xy] = h_k_t;
+
+    float inv_k = 1.0 / k_len;
+    float2 plus_i_H = float2(-h_k_t.y, h_k_t.x); 
+
+    OutDx_Spectrum[id.xy] = plus_i_H * (k_vec.x * inv_k);
+    OutDz_Spectrum[id.xy] = plus_i_H * (k_vec.y * inv_k);
+}
+
+// ==========================================
+// 3. IFFT (バタフライ演算)
+// ==========================================
+Texture2D<float4> ButterflyTex;
+uint Stage; 
+float LodAmplitude;
+
+Texture2D<float2> Input_H;
+Texture2D<float2> Input_Dx;
+Texture2D<float2> Input_Dz;
+
+RWTexture2D<float2> Output_H;
+RWTexture2D<float2> Output_Dx;
+RWTexture2D<float2> Output_Dz;
+RWTexture2D<float4> DisplacementMap;
+
+[numthreads(8, 8, 1)]
+void IFFT_Horizontal(uint3 id : SV_DispatchThreadID) {
+    float4 data = ButterflyTex[uint2(Stage, id.x)];
+    float2 twiddle = data.xy;
+    uint topIdx = (uint)data.z;
+    uint botIdx = (uint)data.w;
+
+    float2 h_top = Input_H[uint2(topIdx, id.y)];
+    float2 h_bot = Input_H[uint2(botIdx, id.y)];
+    Output_H[id.xy] = h_top + MultiplyComplex(twiddle, h_bot);
+
+    float2 dx_top = Input_Dx[uint2(topIdx, id.y)];
+    float2 dx_bot = Input_Dx[uint2(botIdx, id.y)];
+    Output_Dx[id.xy] = dx_top + MultiplyComplex(twiddle, dx_bot);
+
+    float2 dz_top = Input_Dz[uint2(topIdx, id.y)];
+    float2 dz_bot = Input_Dz[uint2(botIdx, id.y)];
+    Output_Dz[id.xy] = dz_top + MultiplyComplex(twiddle, dz_bot);
+}
+
+[numthreads(8, 8, 1)]
+void IFFT_Vertical(uint3 id : SV_DispatchThreadID) {
+    float4 data = ButterflyTex[uint2(Stage, id.y)];
+    float2 twiddle = data.xy;
+    uint topIdx = (uint)data.z;
+    uint botIdx = (uint)data.w;
+
+    float2 h_top = Input_H[uint2(id.x, topIdx)];
+    float2 h_bot = Input_H[uint2(id.x, botIdx)];
+    Output_H[id.xy] = h_top + MultiplyComplex(twiddle, h_bot);
+
+    float2 dx_top = Input_Dx[uint2(id.x, topIdx)];
+    float2 dx_bot = Input_Dx[uint2(id.x, botIdx)];
+    Output_Dx[id.xy] = dx_top + MultiplyComplex(twiddle, dx_bot);
+
+    float2 dz_top = Input_Dz[uint2(id.x, topIdx)];
+    float2 dz_bot = Input_Dz[uint2(id.x, botIdx)];
+    Output_Dz[id.xy] = dz_top + MultiplyComplex(twiddle, dz_bot);
+}
+
+[numthreads(8, 8, 1)]
+void IFFT_Finalize(uint3 id : SV_DispatchThreadID) {
+    float perm = ((id.x + id.y) % 2 == 1) ? -1.0 : 1.0;
+
+    float h = Input_H[id.xy].x * perm * LodAmplitude;
+    float dx = Input_Dx[id.xy].x * perm * LodAmplitude;
+    float dz = Input_Dz[id.xy].x * perm * LodAmplitude;
+
+    DisplacementMap[id.xy] = float4(dx, h, dz, 1.0);
+}

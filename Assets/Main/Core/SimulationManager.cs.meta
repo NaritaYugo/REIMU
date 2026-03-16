@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 4aa1e12a97190cd4db84a70ef076db96
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - sweCS: {instanceID: 0}
+  - apicCS: {instanceID: 0}
+  - fftOcean: {instanceID: 0}
+  - trackTarget: {instanceID: 0}
+  - voxelizerCS: {instanceID: 0}
+  - fluidMeshMaterial: {instanceID: 0}
+  - splashMaterial: {instanceID: 0}
+  - fftOceanMaterial: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
