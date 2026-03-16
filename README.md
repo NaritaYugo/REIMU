@@ -20,6 +20,9 @@ Unity（URP）とCompute Shaderを用いて、以下の3種類の流体手法を
 
 [![Demo](https://img.youtube.com/vi/wG5bqn34c7w/0.jpg)](https://youtu.be/wG5bqn34c7w)
 
+[Windows Demo ダウンロード]()
+※ Unityでビルドした未署名の実行ファイルのため、
+Windows Defender の警告が表示される場合があります。
 ## 概要
 
 多くのゲームでは、広大な海の全体に対して直接インタラクションすることはできません。
