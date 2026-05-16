@@ -280,10 +280,10 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         sweCS.Dispatch(kernelSweClear, tgSWE_X, tgSWE_Y, 1);
         
-        apicCS.SetBuffer(kernelApicClear, "APIC_Grid_Mass", apicGridMassBuffer);
-        apicCS.SetBuffer(kernelApicClear, "APIC_Grid_VelX", apicGridVelXBuffer);
-        apicCS.SetBuffer(kernelApicClear, "APIC_Grid_VelY", apicGridVelYBuffer);
-        apicCS.SetBuffer(kernelApicClear, "APIC_Grid_VelZ", apicGridVelZBuffer);
+        apicCS.SetBuffer(kernelApicClear, "_ApicMassInt", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntX", apicGridVelXBuffer);
+        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntY", apicGridVelYBuffer);
+        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntZ", apicGridVelZBuffer);
         apicCS.SetBuffer(kernelApicClear, "APIC_Divergence", apicDivergenceBuffer);
         apicCS.SetBuffer(kernelApicClear, "APIC_Pressure_Write", apicPressureBufferWrite);
         apicCS.Dispatch(kernelApicClear, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
@@ -394,10 +394,10 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         apicCS.SetBuffer(kernelApicP2G, "ActiveParticleList_Read", activeParticleListBuffer);
         apicCS.SetBuffer(kernelApicP2G, "ActiveParticleCount", activeParticleCountBuffer);
-        apicCS.SetBuffer(kernelApicP2G, "APIC_Grid_Mass", apicGridMassBuffer);
-        apicCS.SetBuffer(kernelApicP2G, "APIC_Grid_VelX", apicGridVelXBuffer);
-        apicCS.SetBuffer(kernelApicP2G, "APIC_Grid_VelY", apicGridVelYBuffer);
-        apicCS.SetBuffer(kernelApicP2G, "APIC_Grid_VelZ", apicGridVelZBuffer);
+        apicCS.SetBuffer(kernelApicP2G, "_ApicMassInt", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntX", apicGridVelXBuffer);
+        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntY", apicGridVelYBuffer);
+        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntZ", apicGridVelZBuffer);
         apicCS.SetBuffer(kernelApicP2G, "APIC_Particle_Buffer", apicParticleBuffer);
         apicCS.DispatchIndirect(kernelApicP2G, particleDispatchArgsBuffer);
 
@@ -405,18 +405,18 @@ public partial class SimulationManager : MonoBehaviour
         // Step 9: APIC 速度の正規化と発散(Divergence)計算
         // グリッドの速度を質量で割り、非圧縮性流体のための発散を計算する
         // =========================================================
-        apicCS.SetBuffer(kernelApicNormVel, "APIC_Grid_Mass", apicGridMassBuffer);
-        apicCS.SetBuffer(kernelApicNormVel, "APIC_Grid_VelX", apicGridVelXBuffer);
-        apicCS.SetBuffer(kernelApicNormVel, "APIC_Grid_VelY", apicGridVelYBuffer);
-        apicCS.SetBuffer(kernelApicNormVel, "APIC_Grid_VelZ", apicGridVelZBuffer);
+        apicCS.SetBuffer(kernelApicNormVel, "_ApicMassInt", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntX", apicGridVelXBuffer);
+        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntY", apicGridVelYBuffer);
+        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntZ", apicGridVelZBuffer);
         apicCS.Dispatch(kernelApicNormVel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         apicCS.SetTexture(kernelApicDiv, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicDiv, "APIC_Grid_VelX", apicGridVelXBuffer);
-        apicCS.SetBuffer(kernelApicDiv, "APIC_Grid_VelY", apicGridVelYBuffer);
-        apicCS.SetBuffer(kernelApicDiv, "APIC_Grid_VelZ", apicGridVelZBuffer);
+        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntX", apicGridVelXBuffer);
+        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntY", apicGridVelYBuffer);
+        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntZ", apicGridVelZBuffer);
         apicCS.SetBuffer(kernelApicDiv, "APIC_Divergence", apicDivergenceBuffer);
-        apicCS.SetBuffer(kernelApicDiv, "APIC_Grid_Mass", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicDiv, "_ApicMassInt", apicGridMassBuffer);
         apicCS.SetBuffer(kernelApicDiv, "SWE_State_Read", sweStateBufferRead);
         apicCS.Dispatch(kernelApicDiv, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
@@ -424,14 +424,14 @@ public partial class SimulationManager : MonoBehaviour
         // Step 10: APIC 圧力計算(Jacobi-PCG法)の初期化
         // =========================================================
         pcgDotResultBuffer.SetData(new uint[] { 0 });
-        apicCS.SetBuffer(kernelApicBuildDiag, "APIC_Grid_Mass", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicBuildDiag, "_ApicMassInt", apicGridMassBuffer);
         apicCS.SetBuffer(kernelApicBuildDiag, "PCG_Precon", pcgPreconBuffer);
         apicCS.SetTexture(kernelApicBuildDiag, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(kernelApicBuildDiag, "SWE_State_Read", sweStateBufferRead);
         apicCS.Dispatch(kernelApicBuildDiag, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         apicCS.SetTexture(kernelApicInitCG, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicInitCG, "APIC_Grid_Mass", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicInitCG, "_ApicMassInt", apicGridMassBuffer);
         apicCS.SetBuffer(kernelApicInitCG, "APIC_Divergence", apicDivergenceBuffer);
         apicCS.SetBuffer(kernelApicInitCG, "APIC_Pressure_Write", apicPressureBufferWrite); 
         apicCS.SetBuffer(kernelApicInitCG, "PCG_R", pcgRBuffer);
@@ -441,7 +441,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.Dispatch(kernelApicInitCG, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         apicCS.SetTexture(kernelApicDotPre, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicDotPre, "APIC_Grid_Mass", apicGridMassBuffer);
+        apicCS.SetBuffer(kernelApicDotPre, "_ApicMassInt", apicGridMassBuffer);
         apicCS.SetBuffer(kernelApicDotPre, "PCG_R", pcgRBuffer);
         apicCS.SetBuffer(kernelApicDotPre, "PCG_Precon", pcgPreconBuffer);
         apicCS.SetBuffer(kernelApicDotPre, "PCG_DotResult", pcgDotResultBuffer);
@@ -457,7 +457,7 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         for (int i = 0; i < pcgIterations; i++)
         {
-            apicCS.SetBuffer(kernelApicApplyA, "APIC_Grid_Mass", apicGridMassBuffer);
+            apicCS.SetBuffer(kernelApicApplyA, "_ApicMassInt", apicGridMassBuffer);
             apicCS.SetBuffer(kernelApicApplyA, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kernelApicApplyA, "PCG_Q", pcgQBuffer);
             apicCS.SetTexture(kernelApicApplyA, "TerrainHeightMap", terrainHeightMap);
@@ -465,7 +465,7 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.Dispatch(kernelApicApplyA, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
             apicCS.SetTexture(kernelApicDotGen, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicDotGen, "APIC_Grid_Mass", apicGridMassBuffer);
+            apicCS.SetBuffer(kernelApicDotGen, "_ApicMassInt", apicGridMassBuffer);
             apicCS.SetBuffer(kernelApicDotGen, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kernelApicDotGen, "PCG_Q", pcgQBuffer);
             apicCS.SetBuffer(kernelApicDotGen, "PCG_DotResult", pcgDotResultBuffer);
@@ -476,7 +476,7 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.Dispatch(kernelApicCalcAlpha, 1, 1, 1);
 
             apicCS.SetTexture(kernelApicUpdatePR, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicUpdatePR, "APIC_Grid_Mass", apicGridMassBuffer);
+            apicCS.SetBuffer(kernelApicUpdatePR, "_ApicMassInt", apicGridMassBuffer);
             apicCS.SetBuffer(kernelApicUpdatePR, "APIC_Pressure_Write", apicPressureBufferWrite);
             apicCS.SetBuffer(kernelApicUpdatePR, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kernelApicUpdatePR, "PCG_Q", pcgQBuffer);
@@ -484,7 +484,7 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.SetBuffer(kernelApicUpdatePR, "PCG_Scalars", pcgScalarsBuffer);
             apicCS.Dispatch(kernelApicUpdatePR, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-            apicCS.SetBuffer(kernelApicDotPre, "APIC_Grid_Mass", apicGridMassBuffer);
+            apicCS.SetBuffer(kernelApicDotPre, "_ApicMassInt", apicGridMassBuffer);
             apicCS.SetBuffer(kernelApicDotPre, "PCG_R", pcgRBuffer);
             apicCS.SetBuffer(kernelApicDotPre, "PCG_Precon", pcgPreconBuffer);
             apicCS.SetBuffer(kernelApicDotPre, "PCG_DotResult", pcgDotResultBuffer);
@@ -495,7 +495,7 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.Dispatch(kernelApicCalcBeta, 1, 1, 1);
 
             apicCS.SetTexture(kernelApicUpdateD, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicUpdateD, "APIC_Grid_Mass", apicGridMassBuffer);
+            apicCS.SetBuffer(kernelApicUpdateD, "_ApicMassInt", apicGridMassBuffer);
             apicCS.SetBuffer(kernelApicUpdateD, "PCG_P", pcgPBuffer);
             apicCS.SetBuffer(kernelApicUpdateD, "PCG_R", pcgRBuffer);
             apicCS.SetBuffer(kernelApicUpdateD, "PCG_Precon", pcgPreconBuffer);
@@ -509,9 +509,9 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         apicCS.SetBuffer(kernelApicG2P, "ActiveParticleList_Read", activeParticleListBuffer);
         apicCS.SetBuffer(kernelApicG2P, "ActiveParticleCount", activeParticleCountBuffer);
-        apicCS.SetBuffer(kernelApicG2P, "APIC_Grid_VelX", apicGridVelXBuffer);
-        apicCS.SetBuffer(kernelApicG2P, "APIC_Grid_VelY", apicGridVelYBuffer);
-        apicCS.SetBuffer(kernelApicG2P, "APIC_Grid_VelZ", apicGridVelZBuffer);
+        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntX", apicGridVelXBuffer);
+        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntY", apicGridVelYBuffer);
+        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntZ", apicGridVelZBuffer);
         apicCS.SetBuffer(kernelApicG2P, "APIC_Pressure_Write", apicPressureBufferWrite);
         apicCS.SetBuffer(kernelApicG2P, "APIC_Particle_Buffer", apicParticleBuffer);
         apicCS.SetTexture(kernelApicG2P, "TerrainHeightMap", terrainHeightMap);
