@@ -92,8 +92,7 @@ inline uint GetGridIndex(uint3 id) {
     return id.z * (_ApicGridRes.x * _ApicGridRes.y) + id.y * _ApicGridRes.x + id.x;
 }
 
-inline float4 GetSWEBoundaryInfo(uint3 apic_id)
-{
+inline float4 GetSWEBoundaryInfo(uint3 apic_id) {
     float3 apic_origin = GetAPICOrigin();
     float2 cell_world_pos = apic_origin.xy + (float2(apic_id.x, apic_id.y) + 0.5f) * _dxApic;
     float2 swe_local_pos = cell_world_pos - swe_world_offset;
@@ -148,8 +147,7 @@ inline bool IsObstacle(uint3 id) {
 // 1. 移流 (Advection)
 // ==========================================
 [numthreads(64, 1, 1)]
-void AdvectParticles (uint3 id : SV_DispatchThreadID)
-{
+void AdvectParticles (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -195,8 +193,7 @@ void AdvectParticles (uint3 id : SV_DispatchThreadID)
 // 2. 粒子から格子への転写 (P2G: Particle to Grid)
 // ==========================================
 [numthreads(64, 1, 1)]
-void P2G_Transfer (uint3 id : SV_DispatchThreadID)
-{
+void P2G_Transfer (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -253,9 +250,8 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 8)]
-void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes)) return;
     uint idx = GetGridIndex(id);
     
     // 10000.0f で割り戻して float にする
@@ -282,9 +278,8 @@ void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID)
 // 圧力方程式の右辺(RHS)を作る。流体がどれくらい圧縮・膨張しようとしているか。
 // ==========================================
 [numthreads(8, 8, 8)]
-void ComputeDivergence (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z|| IsObstacle(id)) return;
+void ComputeDivergence (uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes) || IsObstacle(id)) return;
     uint idx = GetGridIndex(id);
 
     float4 center_info = GetSWEBoundaryInfo(id);
@@ -317,8 +312,7 @@ void ComputeDivergence (uint3 id : SV_DispatchThreadID)
 // 圧力(p)を用いて速度場を非圧縮(発散ゼロ)に修正し、粒子に書き戻す。
 // ==========================================
 [numthreads(64, 1, 1)]
-void G2P_Transfer (uint3 id : SV_DispatchThreadID)
-{
+void G2P_Transfer (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -415,9 +409,8 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 8)]
-void ClearAPICGrid (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+void ClearAPICGrid (uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes)) return;
     uint idx = GetGridIndex(id);
     APIC_Grid_Mass[idx] = 0; APIC_Grid_VelX[idx] = 0; APIC_Grid_VelY[idx] = 0; APIC_Grid_VelZ[idx] = 0;
     APIC_Divergence[idx] = 0.0f; APIC_Pressure_Write[idx] = 0.0f;
@@ -428,8 +421,7 @@ void ClearAPICGrid (uint3 id : SV_DispatchThreadID)
 // 水面に落下したAPIC粒子をSWEの波(h, hu, hv)に変換する
 // ==========================================
 [numthreads(64, 1, 1)]
-void CondenseParticles (uint3 id : SV_DispatchThreadID)
-{
+void CondenseParticles (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -533,9 +525,8 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
 // =========================================================================
 
 [numthreads(8,8,8)]
-void BuildDiag(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+void BuildDiag(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes)) return;
     int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 自身が地形なら対角成分は0
@@ -554,9 +545,8 @@ void BuildDiag(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 8)]
-void InitCG(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+void InitCG(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes)) return;
     int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 地形セルは完全にPCGから除外
@@ -575,8 +565,7 @@ void InitCG(uint3 id : SV_DispatchThreadID)
 // Preconを掛ける内積
 groupshared float shared_dot[512];
 [numthreads(8, 8, 8)]
-void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
-{
+void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) {
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
@@ -604,8 +593,7 @@ void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : 
 
 // 汎用内積
 [numthreads(8, 8, 8)]
-void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) 
-{
+void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)  {
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
@@ -637,9 +625,8 @@ void ComputeInitialRTr(uint3 id : SV_DispatchThreadID) {
 
 // 行列ベクトル積 (q = A * p)
 [numthreads(8,8,8)]
-void ApplyA(uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+void ApplyA(uint3 id : SV_DispatchThreadID) {
+    if (any(id >= (uint3)_ApicGridRes)) return;
     int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 自身が地形なら結果は0

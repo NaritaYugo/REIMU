@@ -39,8 +39,7 @@ float mouse_radius;
 float mouse_force;
 int mouse_active;
 
-SamplerState sampler_LinearRepeat
-{
+SamplerState sampler_LinearRepeat {
     Filter = MIN_MAG_MIP_LINEAR;
     AddressU = Wrap;
     AddressV = Wrap;
@@ -50,8 +49,7 @@ SamplerState sampler_LinearRepeat
 // ヘルパー関数群
 // ==========================================
 
-float GetBedElevation(int ix, int iy)
-{
+float GetBedElevation(int ix, int iy) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     ix = clamp(ix, 0, grid_w - 1);
@@ -60,8 +58,7 @@ float GetBedElevation(int ix, int iy)
     return TerrainHeightMap.Load(int3(ix, iy, 0)).r;
 }
 
-float3 GetFFTState(float2 worldPos, float bed_elevation)
-{
+float3 GetFFTState(float2 worldPos, float bed_elevation) {
     float2 uv0 = worldPos / FFT_Size0;
     float2 uv1 = worldPos / FFT_Size1;
     float2 uv2 = worldPos / FFT_Size2;
@@ -86,8 +83,7 @@ float3 GetFFTState(float2 worldPos, float bed_elevation)
     return float3(h_fft, 0.0f, 0.0f);
 }
 
-float3 GetSWEState(int cx, int cy)
-{
+float3 GetSWEState(int cx, int cy) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     
@@ -147,8 +143,7 @@ inline float3 ComputeFluxY(float h, float u, float v) {
 }
 
 // HLL近似リーマンソルバ
-inline float3 HLL_FluxX(float3 UL, float3 UR)
-{
+inline float3 HLL_FluxX(float3 UL, float3 UR) {
     float2 vL = GetVelocity(UL.x, UL.y, UL.z);
     float2 vR = GetVelocity(UR.x, UR.y, UR.z);
     
@@ -182,8 +177,7 @@ inline float3 HLL_FluxX(float3 UL, float3 UR)
     else return float3(0.0f, 0.0f, 0.0f);
 }
 
-inline float3 HLL_FluxY(float3 UB, float3 UT)
-{
+inline float3 HLL_FluxY(float3 UB, float3 UT) {
     float2 vB = GetVelocity(UB.x, UB.y, UB.z);
     float2 vT = GetVelocity(UT.x, UT.y, UT.z);
     float cB = sqrt(G * max(0.0f, UB.x));
@@ -213,8 +207,7 @@ inline float3 HLL_FluxY(float3 UB, float3 UT)
 }
 
 [numthreads(8, 8, 1)]
-void InitSWE(uint3 id : SV_DispatchThreadID)
-{
+void InitSWE(uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     if (id.x >= (uint)grid_w || id.y >= (uint)grid_h) return;
@@ -238,8 +231,7 @@ void InitSWE(uint3 id : SV_DispatchThreadID)
 // メイン演算カーネル (UpdateSWE)
 // ==========================================
 [numthreads(8, 8, 1)]
-void UpdateSWE (uint3 id : SV_DispatchThreadID)
-{
+void UpdateSWE (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y; 
     int ix = (int)id.x;
@@ -555,8 +547,7 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
 // 昇華カーネル (SWE -> APIC)
 // ==========================================
 [numthreads(8, 8, 1)]
-void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
-{
+void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
@@ -714,9 +705,8 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void ApplyCondensation (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
+void ApplyCondensation (uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
     uint index = id.y * _SweGridRes.x + id.x;
 
     SWECell current = SWE_State_Read[index];
@@ -731,9 +721,8 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void InteractSWE (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
+void InteractSWE (uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = SWE_State_Read[index];
@@ -754,8 +743,7 @@ void InteractSWE (uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void ShiftSWEGrid(uint3 id : SV_DispatchThreadID)
-{
+void ShiftSWEGrid(uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
@@ -784,9 +772,8 @@ void ShiftSWEGrid(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void ClearIntermediateBuffers (uint3 id : SV_DispatchThreadID)
-{
-    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
+void ClearIntermediateBuffers (uint3 id : SV_DispatchThreadID) {
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
     
     uint index = id.y * _SweGridRes.x + id.x;
     
