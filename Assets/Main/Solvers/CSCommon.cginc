@@ -24,8 +24,7 @@ struct APICParticle {
 // ==========================================
 // 共通の定数
 // ==========================================
-static const float G = 9.81f;
-static const float EPSILON = 1e-6f;
+static const float GRAVITY = 9.81f;
 static const float H_MIN = 0.001f;
 static const float ATOMIC_SCALE = 10000.0f;
 
@@ -36,7 +35,6 @@ float2 _SweGridRes;
 float3 _ApicGridRes;
 float _dxSwe;
 float _dxApic;
-int M_ratio;             // 解像度比 (M = _dxApic / _dxSwe)
 
 float base_mass;         // 粒子の基準質量
 float sea_bottom_z;      // 仮想水深（海底の基準高さ）

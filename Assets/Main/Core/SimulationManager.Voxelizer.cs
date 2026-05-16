@@ -63,7 +63,7 @@ public partial class SimulationManager
             voxelizerCS.SetFloat("_ParticleRadius", m_McParticleRadius);  
             voxelizerCS.SetFloat("_IsoLevel", m_IsoLevelTH);   
             voxelizerCS.SetFloat("_SplashSpeedThreshold", m_SplashStretchTH);
-            voxelizerCS.SetFloat("sea_bottom_z", seaBottomHeight);
+            voxelizerCS.SetFloat("sea_bottom_z", m_SeaBottomHeight);
 
             // =========================================================
             // Step 13-1: ボクセルグリッドの初期化
@@ -164,7 +164,7 @@ public partial class SimulationManager
                 splashMaterial.SetBuffer("VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
                 splashMaterial.SetFloat("_IsoLevel", m_IsoLevelTH);
             }
-            Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, maxParticles * 6, 1);
+            Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, m_MaxParticles * 6, 1);
         }
 
         // 3. SWEとFFTの描画
@@ -176,7 +176,7 @@ public partial class SimulationManager
                 fftOceanMaterial.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
                 fftOceanMaterial.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
                 fftOceanMaterial.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
-                fftOceanMaterial.SetFloat("SeaBottomZ", seaBottomHeight);
+                fftOceanMaterial.SetFloat("SeaBottomZ", m_SeaBottomHeight);
             }
             if (buffers.sweStateRead != null) {
                 fftOceanMaterial.SetBuffer("SWE_State_Buffer", buffers.sweStateRead);

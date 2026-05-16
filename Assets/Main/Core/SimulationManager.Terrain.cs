@@ -58,7 +58,7 @@ public partial class SimulationManager
                 SwapSWEBuffers();
             }
             
-            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, seaBottomHeight);
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_SeaBottomHeight);
         }
 
         if (!isSWEInitialized)

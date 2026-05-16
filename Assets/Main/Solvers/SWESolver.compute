@@ -115,7 +115,7 @@ inline float2 GetVelocity(float h, float hu, float hv) {
 // フラックス
 inline float3 ComputeFlux(float h, float u, float v) { 
     float q = h * u; 
-    return float3(q, q * u + 0.5f * G * h * h, q * v); 
+    return float3(q, q * u + 0.5f * GRAVITY * h * h, q * v); 
 }
 
 // HLL近似リーマンソルバ
@@ -124,8 +124,8 @@ inline float3 HLL_Flux(float3 UL, float3 UR) {
     float2 vR = GetVelocity(UR.x, UR.y, UR.z);
     
     // 波の伝播速度 (Gravity Wave Speed) c = sqrt(g * h)
-    float cL = sqrt(G * max(0.0f, UL.x));
-    float cR = sqrt(G * max(0.0f, UR.x));
+    float cL = sqrt(GRAVITY * max(0.0f, UL.x));
+    float cR = sqrt(GRAVITY * max(0.0f, UR.x));
     float sL, sR;
 
     // Wet/Dry(水/陸) 状態に応じた波の速度の予測
@@ -221,8 +221,8 @@ inline void ComputeAxisFlux(
     float h_0_pos = max(0.0f, Eta_pos_L - B_0);
     float h_0_neg = max(0.0f, Eta_neg_R - B_0);
     
-    source_term = 0.5f * G * (h_pos_L * h_pos_L - h_neg_R * h_neg_R)
-                - 0.5f * G * (h_0_pos * h_0_pos - h_0_neg * h_0_neg);
+    source_term = 0.5f * GRAVITY * (h_pos_L * h_pos_L - h_neg_R * h_neg_R)
+                - 0.5f * GRAVITY * (h_0_pos * h_0_pos - h_0_neg * h_0_neg);
 }
 
 // ==========================================
@@ -307,12 +307,12 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     float speed = length(vel);
     
     float safe_h = max(new_h, 0.05f);
-    float friction = (G * n_manning * n_manning * speed) / pow(safe_h, 0.3333f);
+    float friction = (GRAVITY * n_manning * n_manning * speed) / pow(safe_h, 0.3333f);
     float damp = 1.0f / (1.0f + _dtSwe * max(0.0f, friction));
     new_hu *= damp;
     new_hv *= damp;
 
-    float c = sqrt(G * max(new_h, 0.001f));
+    float c = sqrt(GRAVITY * max(new_h, 0.001f));
     float max_safe_speed = max(0.0f, (0.2f * _dxSwe / _dtSwe) - c);
     if (speed > max_safe_speed) {
         float excess_speed = speed - max_safe_speed;
@@ -403,7 +403,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     
     // フルード数で簡易判定して早期リターン
     float fr_sq_threshold = fr_threshold * fr_threshold;
-    if (speed_sq < fr_sq_threshold * G * current.h) { 
+    if (speed_sq < fr_sq_threshold * GRAVITY * current.h) { 
         SWE_State_Write[index] = current; 
         return; 
     }
@@ -452,7 +452,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     float laplacian_Eta = (Eta_L + Eta_R + Eta_D + Eta_U - 4.0f * Eta_C) / (safe_dx * safe_dx);
     
     float speed = sqrt(max(0.0f, u_c * u_c + v_c * v_c));
-    float fr = speed / sqrt(G * safe_h);
+    float fr = speed / sqrt(GRAVITY * safe_h);
 
     // 昇華(砕波)の判定条件
     // 1. 水面の勾配が閾値以上

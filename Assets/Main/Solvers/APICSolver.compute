@@ -182,7 +182,7 @@ void Advect (uint3 id : SV_DispatchThreadID) {
     APICParticle p = APIC_Particle_Buffer[index];
     if (p.mass <= 0.0f) return;
 
-    p.velocity.z -= G * _dtApic;
+    p.velocity.z -= GRAVITY * _dtApic;
     p.position += p.velocity * _dtApic;
 
     float3 apic_origin = GetAPICOrigin();

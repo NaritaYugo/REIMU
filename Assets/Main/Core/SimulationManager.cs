@@ -77,12 +77,12 @@ public partial class SimulationManager : MonoBehaviour
     [SerializeField] private Vector3Int m_DomainLength = new(64, 64, 64);
     [SerializeField] private int m_SweCellsPerMeter = 2;
     [SerializeField] private int m_ApicCellsPerMeter = 1;
-    [SerializeField] private int maxParticles = 1000000;
-    [SerializeField] private int pcgIterations = 8;
+    [SerializeField] private int m_MaxParticles = 1000000;
+    [SerializeField] private int m_PcgIterations = 8;
 
     [Header("Fluid Settings")]
-    [SerializeField] private float baseMass = 0.5f;
-    [SerializeField] private float seaBottomHeight = -3f; //浅水近似のための仮の水深
+    [SerializeField] private float m_BaseMass = 0.5f;
+    [SerializeField] private float m_SeaBottomHeight = -3f; //浅水近似のための仮の水深
 
     [Header("Sublimation")]
     [SerializeField] private float m_ToApicFroudeTH = 1.0f; 
@@ -108,14 +108,13 @@ public partial class SimulationManager : MonoBehaviour
     [Header("Tracking")]
     public FFTManager fftOcean;
     public Transform trackTarget;
-    
+
     [HideInInspector] public Vector2 sweWorldOffset = Vector2.zero; 
     [HideInInspector] public Vector3 apicWorldOffset = Vector3.zero;
 
     private float dxSwe, dxApic;
     private Vector2Int sweGridRes;
     private Vector3Int apicGridRes;
-    private int M_ratio;
 
     private Vector3 prevMousePos;
     private bool wasMouseDown = false;
@@ -137,11 +136,9 @@ public partial class SimulationManager : MonoBehaviour
             float targetBaseX = trackTarget.position.x - sweGridRes.x * dxSwe * 0.5f;
             float targetBaseZ = trackTarget.position.z - sweGridRes.y * dxSwe * 0.5f;
             sweWorldOffset = new Vector2(targetBaseX, targetBaseZ);
-            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, seaBottomHeight);
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_SeaBottomHeight);
         }
-
-        M_ratio = (int)(dxApic / dxSwe);
-
+        
         sweKernels.Initialize(sweCS);
         apicKernels.Initialize(apicCS);
         
@@ -156,7 +153,7 @@ public partial class SimulationManager : MonoBehaviour
         int sweTotalCells = sweGridRes.x * sweGridRes.y;
         buffers.sweStateRead = new ComputeBuffer(sweTotalCells, Marshal.SizeOf(typeof(SWECell)));
         buffers.sweStateWrite = new ComputeBuffer(sweTotalCells, Marshal.SizeOf(typeof(SWECell)));
-        buffers.apicParticle = new ComputeBuffer(maxParticles, Marshal.SizeOf(typeof(APICParticle)), ComputeBufferType.Default);
+        buffers.apicParticle = new ComputeBuffer(m_MaxParticles, Marshal.SizeOf(typeof(APICParticle)), ComputeBufferType.Default);
         buffers.deltaH = new ComputeBuffer(sweTotalCells, sizeof(uint));
         buffers.deltaHU = new ComputeBuffer(sweTotalCells, sizeof(uint));
         buffers.deltaHV = new ComputeBuffer(sweTotalCells, sizeof(uint));
@@ -171,7 +168,7 @@ public partial class SimulationManager : MonoBehaviour
         buffers.particleCounter = new ComputeBuffer(1, sizeof(uint));
         buffers.particleCounter.SetData(new uint[] { 0 });
 
-        APICParticle[] emptyParticles = new APICParticle[maxParticles];
+        APICParticle[] emptyParticles = new APICParticle[m_MaxParticles];
         buffers.apicParticle.SetData(emptyParticles);
         
         SWECell[] initialSWE = new SWECell[sweTotalCells];
@@ -189,7 +186,7 @@ public partial class SimulationManager : MonoBehaviour
         buffers.pcgDotResult = new ComputeBuffer(1, sizeof(uint));
         buffers.pcgScalars = new ComputeBuffer(5, sizeof(float));
 
-        buffers.activeParticleList = new ComputeBuffer(maxParticles, sizeof(uint), ComputeBufferType.Append);
+        buffers.activeParticleList = new ComputeBuffer(m_MaxParticles, sizeof(uint), ComputeBufferType.Append);
         buffers.activeParticleCount = new ComputeBuffer(1, sizeof(uint), ComputeBufferType.Raw);
         buffers.particleDispatchArgs = new ComputeBuffer(3, sizeof(uint), ComputeBufferType.IndirectArguments);
     }
@@ -203,9 +200,8 @@ public partial class SimulationManager : MonoBehaviour
             cs.SetInts("_ApicGridRes", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
             cs.SetFloat("_dxSwe", dxSwe);
             cs.SetFloat("_dxApic", dxApic);
-            cs.SetInt("M_ratio", M_ratio);  
-            cs.SetFloat("base_mass", baseMass);
-            cs.SetFloat("sea_bottom_z", seaBottomHeight);
+            cs.SetFloat("base_mass", m_BaseMass);
+            cs.SetFloat("sea_bottom_z", m_SeaBottomHeight);
         }
         
         sweCS.SetBuffer(sweKernels.ClearIntermediates, "Delta_H_Buffer", buffers.deltaH);
@@ -277,7 +273,7 @@ public partial class SimulationManager : MonoBehaviour
         int tgAPIC_X = (apicGridRes.x + 7) / 8;
         int tgAPIC_Y = (apicGridRes.z + 7) / 8;  
         int tgAPIC_Z = (apicGridRes.y + 7) / 8; 
-        int tgParticles = (maxParticles + 63) / 64;
+        int tgParticles = (m_MaxParticles + 63) / 64;
 
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
             int[] apicFFTKernels = { apicKernels.BuildActiveList, apicKernels.Condense, apicKernels.Divergence, apicKernels.BuildDiag };
@@ -311,7 +307,7 @@ public partial class SimulationManager : MonoBehaviour
         buffers.activeParticleList.SetCounterValue(0); 
         apicCS.SetBuffer(apicKernels.BuildActiveList, "APIC_Particle_Buffer", buffers.apicParticle);
         apicCS.SetBuffer(apicKernels.BuildActiveList, "ActiveParticleList_Write", buffers.activeParticleList);
-        apicCS.SetInt("max_particles", maxParticles);
+        apicCS.SetInt("max_particles", m_MaxParticles);
         apicCS.Dispatch(apicKernels.BuildActiveList, tgParticles, 1, 1);
 
         ComputeBuffer.CopyCount(buffers.activeParticleList, buffers.activeParticleCount, 0);
@@ -396,7 +392,7 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetFloat("conversion_rate_multiplier", m_SublimatePerSecond);
         sweCS.SetFloat("push_z_multiplier", m_SublimateVerticalMulti);
         sweCS.SetFloat("splash_velocity_multiplier", m_SublimateSplashMulti);
-        sweCS.SetInt("max_particles", maxParticles);
+        sweCS.SetInt("max_particles", m_MaxParticles);
         sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Read", buffers.sweStateRead);
         sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Write", buffers.sweStateWrite);
         sweCS.SetBuffer(sweKernels.Sublimate, "APIC_Particle_Buffer", buffers.apicParticle);
@@ -471,7 +467,7 @@ public partial class SimulationManager : MonoBehaviour
         // Step 11: APIC 圧力ポアソン方程式の反復計算 (PCGループ)
         // 質量保存を満たすための圧力を求める(最も負荷が高いステップ)
         // =========================================================
-        for (int i = 0; i < pcgIterations; i++)
+        for (int i = 0; i < m_PcgIterations; i++)
         {
             apicCS.SetBuffer(apicKernels.ApplyA, "_ApicMassInt", buffers.apicGridMass);
             apicCS.SetBuffer(apicKernels.ApplyA, "PCG_P", buffers.pcgP);
