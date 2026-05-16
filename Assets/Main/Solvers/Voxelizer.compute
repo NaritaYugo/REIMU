@@ -65,8 +65,8 @@ inline float GetFFTSurfaceY(float2 worldPos)
 }
 
 inline float3 GetVoxelOrigin() {
-    float3 origin = apic_world_offset; // C#からZ-upで渡されている前提
-    origin.z -= (_GridSize.z * _CellSize) * 0.5f; // 高さはZ軸
+    float3 origin = _ApicWorldOffset; // Z-up
+    origin.z -= (_GridSize.z * _CellSize) * 0.5f;
     return origin;
 }
 
@@ -170,8 +170,8 @@ void SplatSWE(uint3 id : SV_DispatchThreadID) {
     float localX = id.x * _CellSize;
     float localY = id.y * _CellSize; 
 
-    float sweLocalX = (localX + voxel_origin.x) - swe_world_offset.x;
-    float sweLocalY = (localY + voxel_origin.y) - swe_world_offset.y;
+    float sweLocalX = (localX + voxel_origin.x) - _SweWorldOffset.x;
+    float sweLocalY = (localY + voxel_origin.y) - _SweWorldOffset.y;
 
     int sweX = clamp(int(sweLocalX / _dxSwe), 0, _SweGridRes.x - 1);
     int sweY = clamp(int(sweLocalY / _dxSwe), 0, _SweGridRes.y - 1); 
@@ -305,8 +305,8 @@ float GetDensitySafe(int3 idx) {
 
 // --- 地形の高さを取得 ---
 float GetTerrainHeight(float2 world_xy) {
-    float localX = world_xy.x - swe_world_offset.x;
-    float localY = world_xy.y - swe_world_offset.y;
+    float localX = world_xy.x - _SweWorldOffset.x;
+    float localY = world_xy.y - _SweWorldOffset.y;
     int sweX = clamp(int(localX / _dxSwe), 0, _SweGridRes.x - 1);
     int sweY = clamp(int(localY / _dxSwe), 0, _SweGridRes.y - 1);
     return TerrainHeightMap.Load(int3(sweX, sweY, 0)).r;

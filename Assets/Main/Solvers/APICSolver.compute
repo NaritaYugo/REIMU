@@ -75,9 +75,9 @@ float GetFFTSurfaceY(float2 worldPos) {
 // APICの原点を海面(0m)からグリッドの高さ半分だけ下げた位置にする
 inline float3 GetAPICOrigin() {
     return float3(
-        apic_world_offset.x,
-        apic_world_offset.y,
-        apic_world_offset.z - (_ApicGridRes.z * 0.5f) * _dxApic
+        _ApicWorldOffset.x,
+        _ApicWorldOffset.y,
+        _ApicWorldOffset.z - (_ApicGridRes.z * 0.5f) * _dxApic
     );
 }
 
@@ -94,7 +94,7 @@ inline uint GetGridIndex(uint3 id) {
 inline float4 GetSWEBoundaryInfo(uint3 apic_id) {
     float3 apic_origin = GetAPICOrigin();
     float2 cell_world_pos = apic_origin.xy + (float2(apic_id.x, apic_id.y) + 0.5f) * _dxApic;
-    float2 swe_local_pos = cell_world_pos - swe_world_offset;
+    float2 swe_local_pos = cell_world_pos - _SweWorldOffset;
     
     int swe_x = clamp((int)floor(swe_local_pos.x / _dxSwe), 0, (int)_SweGridRes.x - 1);
     int swe_y = clamp((int)floor(swe_local_pos.y / _dxSwe), 0, (int)_SweGridRes.y - 1);
@@ -130,7 +130,7 @@ inline float4 GetSWEBoundaryInfo(uint3 apic_id) {
 inline bool IsObstacle(uint3 id) {
     float3 apic_origin = GetAPICOrigin();
     float2 cell_world_pos = apic_origin.xy + (float2(id.x, id.y) + 0.5f) * _dxApic;
-    float2 swe_local_pos = cell_world_pos - swe_world_offset;
+    float2 swe_local_pos = cell_world_pos - _SweWorldOffset;
     int swe_x = clamp((int)floor(swe_local_pos.x / _dxSwe), 0, (int)_SweGridRes.x - 1);
     int swe_y = clamp((int)floor(swe_local_pos.y / _dxSwe), 0, (int)_SweGridRes.y - 1);
     
@@ -190,7 +190,7 @@ void Advect (uint3 id : SV_DispatchThreadID) {
     float3 max_bounds = apic_origin + float3(_ApicGridRes.x, _ApicGridRes.y, _ApicGridRes.z) * _dxApic;
 
     // 地形（Terrain）との衝突判定と摩擦
-    float2 swe_local_pos = p.position.xy - swe_world_offset;
+    float2 swe_local_pos = p.position.xy - _SweWorldOffset;
     int swe_x = clamp((int)floor(swe_local_pos.x / _dxSwe), 0, (int)_SweGridRes.x - 1);
 
     int flipped_y = (int)_SweGridRes.y - 1 - clamp((int)floor(swe_local_pos.y / _dxSwe), 0, (int)_SweGridRes.y - 1);
@@ -228,7 +228,7 @@ void Condense (uint3 id : SV_DispatchThreadID) {
 
     int grid_w = _SweGridRes.x;
     int grid_h = _SweGridRes.y;
-    float2 swe_local_pos = p.position.xy - swe_world_offset;
+    float2 swe_local_pos = p.position.xy - _SweWorldOffset;
     float2 swe_pos = swe_local_pos / _dxSwe;
     int2 center_idx = (int2)floor(swe_pos);
     int cx_center = clamp(center_idx.x, 0, grid_w - 1);
@@ -240,7 +240,7 @@ void Condense (uint3 id : SV_DispatchThreadID) {
 
     int flipped_y = (int)_SweGridRes.y - 1 - cy_center;
     float b_c = TerrainHeightMap.Load(int3(cx_center, flipped_y, 0)).r;
-    float2 cell_world_pos = swe_world_offset + float2(cx_center, cy_center) * _dxSwe;
+    float2 cell_world_pos = _SweWorldOffset + float2(cx_center, cy_center) * _dxSwe;
     float fft_y = GetFFTSurfaceY(cell_world_pos);
     float current_surface_z = b_c + SWE_State_Read[flat_center].h + fft_y;
 

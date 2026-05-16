@@ -79,10 +79,7 @@ public partial class SimulationManager : MonoBehaviour
     [SerializeField] private int m_ApicCellsPerMeter = 1;
     [SerializeField] private int m_MaxParticles = 1000000;
     [SerializeField] private int m_PcgIterations = 8;
-
-    [Header("Fluid Settings")]
-    [SerializeField] private float m_BaseMass = 0.5f;
-    [SerializeField] private float m_SeaBottomHeight = -3f; //浅水近似のための仮の水深
+    [SerializeField] private float m_VirtualSeaBottomHeight = -3f; //浅水近似のための仮の水深
 
     [Header("Sublimation")]
     [SerializeField] private float m_ToApicFroudeTH = 1.0f; 
@@ -136,7 +133,7 @@ public partial class SimulationManager : MonoBehaviour
             float targetBaseX = trackTarget.position.x - sweGridRes.x * dxSwe * 0.5f;
             float targetBaseZ = trackTarget.position.z - sweGridRes.y * dxSwe * 0.5f;
             sweWorldOffset = new Vector2(targetBaseX, targetBaseZ);
-            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_SeaBottomHeight);
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_VirtualSeaBottomHeight);
         }
         
         sweKernels.Initialize(sweCS);
@@ -200,8 +197,7 @@ public partial class SimulationManager : MonoBehaviour
             cs.SetInts("_ApicGridRes", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
             cs.SetFloat("_dxSwe", dxSwe);
             cs.SetFloat("_dxApic", dxApic);
-            cs.SetFloat("base_mass", m_BaseMass);
-            cs.SetFloat("sea_bottom_z", m_SeaBottomHeight);
+            cs.SetFloat("sea_bottom_z", m_VirtualSeaBottomHeight);
         }
         
         sweCS.SetBuffer(sweKernels.ClearIntermediates, "Delta_H_Buffer", buffers.deltaH);
@@ -232,8 +228,8 @@ public partial class SimulationManager : MonoBehaviour
         {
             cs.SetFloat("_dtSwe", dtSwe);
             cs.SetFloat("_dtApic", dtApic);
-            cs.SetVector("apic_world_offset", apicWorldOffset);
-            cs.SetVector("swe_world_offset", sweWorldOffset);
+            cs.SetVector("_ApicWorldOffset", apicWorldOffset);
+            cs.SetVector("_SweWorldOffset", sweWorldOffset);
         }
 
         // --- マウス入力 ---

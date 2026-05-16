@@ -470,7 +470,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         if (delta_h < 0.05f) { SWE_State_Write[index] = current; return; }
 
         float sublimated_mass = delta_h * safe_dx * safe_dx; 
-        uint count = (uint)max(1.0f, sublimated_mass / base_mass);
+        uint count = (uint)max(1.0f, sublimated_mass);
         count = min(count, 50);
 
         float mass_per_particle = sublimated_mass / max(1.0f, (float)count);
@@ -497,8 +497,8 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
             float ry = frac(sin(ix * 93.989f  + (iy + i) * 67.345f) * 43758.5453f);
             float rz = frac(sin((ix * iy) * 45.123f + i * 13.567f) * 43758.5453f);
 
-            p.position.x = swe_world_offset.x + ((float)ix + rx) * _dxSwe;
-            p.position.y = swe_world_offset.y + ((float)iy + ry) * _dxSwe;
+            p.position.x = _SweWorldOffset.x + ((float)ix + rx) * _dxSwe;
+            p.position.y = _SweWorldOffset.y + ((float)iy + ry) * _dxSwe;
             float B_C = GetBedElevation(ix, iy);
             float spawn_base_z = B_C + current.h - delta_h; 
             p.position.z = spawn_base_z + rz * delta_h;
@@ -557,7 +557,7 @@ void InteractSwe (uint3 id : SV_DispatchThreadID) {
 
     if (mouse_active == 1)
     {
-        float2 cell_world_pos = swe_world_offset + float2(id.x, id.y) * _dxSwe;
+        float2 cell_world_pos = _SweWorldOffset + float2(id.x, id.y) * _dxSwe;
         if (distance(cell_world_pos, mouse_pos) < mouse_radius)
         {
             if (current.h > 0.01f) {
@@ -587,7 +587,7 @@ void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
     nextState = SWE_State_Read[src_y * grid_w + src_x];
     } else {
         float new_B = GetBedElevation(ix, iy);
-        float2 cellWorldPos = swe_world_offset + float2(ix, iy) * _dxSwe;
+        float2 cellWorldPos = _SweWorldOffset + float2(ix, iy) * _dxSwe;
         float3 fft = GetFFTState(cellWorldPos, new_B);
         
         // 陸地に入った場合は H_MIN ではなく 0.0f にする

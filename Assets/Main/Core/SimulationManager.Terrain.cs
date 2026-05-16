@@ -40,7 +40,7 @@ public partial class SimulationManager
                 CaptureTerrainHeight();
                 
                 sweCS.SetInts("shift_amount", new int[] { shiftCellsX, shiftCellsY });
-                sweCS.SetVector("swe_world_offset", sweWorldOffset);
+                sweCS.SetVector("_SweWorldOffset", sweWorldOffset);
                 
                 if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                     sweCS.SetTexture(sweKernels.ShiftSweGrid, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
@@ -58,13 +58,13 @@ public partial class SimulationManager
                 SwapSWEBuffers();
             }
             
-            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_SeaBottomHeight);
+            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_VirtualSeaBottomHeight);
         }
 
         if (!isSWEInitialized)
         {
             CaptureTerrainHeight();
-            sweCS.SetVector("swe_world_offset", sweWorldOffset);
+            sweCS.SetVector("_SweWorldOffset", sweWorldOffset);
             
             sweCS.SetTexture(sweKernels.InitSwe, "TerrainHeightMap", terrainHeightMap);
             sweCS.SetBuffer(sweKernels.InitSwe, "SWE_State_Write", buffers.sweStateWrite);

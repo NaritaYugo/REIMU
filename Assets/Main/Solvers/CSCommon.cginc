@@ -36,13 +36,12 @@ float3 _ApicGridRes;
 float _dxSwe;
 float _dxApic;
 
-float base_mass;         // 粒子の基準質量
 float sea_bottom_z;      // 仮想水深（海底の基準高さ）
 
 float _dtApic;
 float _dtSwe;
-float3 apic_world_offset;// APIC領域のワールド座標オフセット
-float2 swe_world_offset; // SWE領域のワールド座標オフセット
+float3 _ApicWorldOffset;// APIC領域のワールド座標オフセット
+float2 _SweWorldOffset; // SWE領域のワールド座標オフセット
 
 // ==========================================
 // 共通のヘルパー関数

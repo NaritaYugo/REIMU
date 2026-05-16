@@ -37,7 +37,7 @@ Shader "APICSplash"
             StructuredBuffer<APICParticle> APIC_Particle_Buffer;
             StructuredBuffer<float> VoxelGrid_FinalDensity; 
             
-            float3 apic_world_offset;
+            float3 _ApicWorldOffset;
             float3 _GridSize;
             float _CellSize;
             float _MinSize;
@@ -68,7 +68,7 @@ Shader "APICSplash"
                 // ボクセル内部（水の中）にある飛沫を描画しないように、自身の位置の密度を取得する
                 APICParticle p = APIC_Particle_Buffer[particleIndex];
                 
-                float3 origin_zup = apic_world_offset;
+                float3 origin_zup = _ApicWorldOffset;
                 origin_zup.z -= (_GridSize.z * _CellSize) * 0.5f;
 
                 float3 localPos_zup = p.position - origin_zup;
