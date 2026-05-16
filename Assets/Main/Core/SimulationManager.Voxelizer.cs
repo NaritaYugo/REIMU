@@ -102,14 +102,14 @@ public partial class SimulationManager
             // Step 13-2: 粒子のスプラッティング (Splat)
             // APIC粒子が持つ質量(密度)と運動量を、描画用の高解像度ボクセルグリッドに焼き付ける
             // =========================================================
-            voxelizerCS.SetBuffer(kernelVoxSplat, "ActiveParticleList_Read", activeParticleListBuffer);
-            voxelizerCS.SetBuffer(kernelVoxSplat, "ActiveParticleCount", activeParticleCountBuffer);
+            voxelizerCS.SetBuffer(kernelVoxSplat, "ActiveParticleList_Read", buffers.activeParticleList);
+            voxelizerCS.SetBuffer(kernelVoxSplat, "ActiveParticleCount", buffers.activeParticleCount);
             voxelizerCS.SetBuffer(kernelVoxSplat, "VoxelGrid_Density", voxelGridBuffer);
             voxelizerCS.SetBuffer(kernelVoxSplat, "VoxelGrid_MomX", voxelMomXBuffer);
             voxelizerCS.SetBuffer(kernelVoxSplat, "VoxelGrid_MomY", voxelMomYBuffer);
             voxelizerCS.SetBuffer(kernelVoxSplat, "VoxelGrid_MomZ", voxelMomZBuffer);
-            voxelizerCS.SetBuffer(kernelVoxSplat, "ParticleBuffer", apicParticleBuffer);
-            voxelizerCS.DispatchIndirect(kernelVoxSplat, particleDispatchArgsBuffer);
+            voxelizerCS.SetBuffer(kernelVoxSplat, "ParticleBuffer", buffers.apicParticle);
+            voxelizerCS.DispatchIndirect(kernelVoxSplat, buffers.particleDispatchArgs);
 
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                 voxelizerCS.SetTexture(kernelVoxSplatSWE, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
@@ -126,7 +126,7 @@ public partial class SimulationManager
             // =========================================================
             voxelizerCS.SetTexture(kernelVoxSplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(kernelVoxSplatSWE, "VoxelGrid_Density", voxelGridBuffer);
-            voxelizerCS.SetBuffer(kernelVoxSplatSWE, "SWE_State_Read", sweStateBufferRead);
+            voxelizerCS.SetBuffer(kernelVoxSplatSWE, "SWE_State_Read", buffers.sweStateRead);
             voxelizerCS.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
             voxelizerCS.SetFloat("_dxSwe", dxSwe);
             voxelizerCS.Dispatch(kernelVoxSplatSWE, tgVoxelX, tgVoxelY, tgVoxelZ);
@@ -177,11 +177,11 @@ public partial class SimulationManager
         }
 
         // 2. 飛沫（スプラッシュ）のビルボード描画
-        if (splashMaterial != null && apicParticleBuffer != null) {
+        if (splashMaterial != null && buffers.apicParticle != null) {
             splashMaterial.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
             splashMaterial.SetFloat("_CellSize", currentCellSize);
             splashMaterial.SetFloat("_SpeedThreshold", splashSpeedThreshold);
-            splashMaterial.SetBuffer("APIC_Particle_Buffer", apicParticleBuffer);
+            splashMaterial.SetBuffer("APIC_Particle_Buffer", buffers.apicParticle);
             splashMaterial.SetVector("apic_world_offset", apicWorldOffset);
 
             if (voxelFinalDensityBuffer != null) {
@@ -202,8 +202,8 @@ public partial class SimulationManager
                 fftOceanMaterial.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
                 fftOceanMaterial.SetFloat("SeaBottomZ", seaBottomHeight);
             }
-            if (sweStateBufferRead != null) {
-                fftOceanMaterial.SetBuffer("SWE_State_Buffer", sweStateBufferRead);
+            if (buffers.sweStateRead != null) {
+                fftOceanMaterial.SetBuffer("SWE_State_Buffer", buffers.sweStateRead);
                 fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
                 fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
                 fftOceanMaterial.SetVector("_swe_world_offset", sweWorldOffset);

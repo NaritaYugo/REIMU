@@ -11,9 +11,11 @@ public partial class SimulationManager
     private void InitializeTerrain()
     {
         // 浮動小数点テクスチャ(RFloat)を使うことで、精度の高い地形高をGPUに渡す
-        terrainHeightMap = new Texture2D(sweGridRes.x, sweGridRes.y, TextureFormat.RFloat, false);
-        terrainHeightMap.filterMode = FilterMode.Bilinear;
-        terrainHeightMap.wrapMode = TextureWrapMode.Clamp;
+        terrainHeightMap = new Texture2D(sweGridRes.x, sweGridRes.y, TextureFormat.RFloat, false)
+        {
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
     }
 
     private void UpdateTrackingAndTerrain()
@@ -50,8 +52,8 @@ public partial class SimulationManager
                 }
                 
                 sweCS.SetTexture(kernelSweShift, "TerrainHeightMap", terrainHeightMap); 
-                sweCS.SetBuffer(kernelSweShift, "SWE_State_Read", sweStateBufferRead);
-                sweCS.SetBuffer(kernelSweShift, "SWE_State_Write", sweStateBufferWrite);
+                sweCS.SetBuffer(kernelSweShift, "SWE_State_Read", buffers.sweStateRead);
+                sweCS.SetBuffer(kernelSweShift, "SWE_State_Write", buffers.sweStateWrite);
                 sweCS.Dispatch(kernelSweShift, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
                 SwapSWEBuffers();
             }
@@ -65,7 +67,7 @@ public partial class SimulationManager
             sweCS.SetVector("swe_world_offset", sweWorldOffset);
             
             sweCS.SetTexture(kernelSweInit, "TerrainHeightMap", terrainHeightMap);
-            sweCS.SetBuffer(kernelSweInit, "SWE_State_Write", sweStateBufferWrite);
+            sweCS.SetBuffer(kernelSweInit, "SWE_State_Write", buffers.sweStateWrite);
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                 sweCS.SetTexture(kernelSweInit, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
                 sweCS.SetTexture(kernelSweInit, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
