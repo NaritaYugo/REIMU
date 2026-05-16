@@ -183,8 +183,8 @@ public partial class SimulationManager : MonoBehaviour
         {
             cs.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
             cs.SetInts("_ApicGridRes", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
-            cs.SetFloat("dx_swe", dxSwe);
-            cs.SetFloat("dx_apic", dxApic);
+            cs.SetFloat("_dxSwe", dxSwe);
+            cs.SetFloat("_dxApic", dxApic);
             cs.SetInt("M_ratio", M_ratio);  
             cs.SetFloat("base_mass", baseMass);
             cs.SetFloat("sea_bottom_z", seaBottomHeight);

@@ -33,9 +33,9 @@ static const float H_MIN = 0.001f;
 // ==========================================
 float2 _SweGridRes;    // SWEのグリッド解像度
 float3 _ApicGridRes;   // APICの3Dグリッド解像度
-float dx_swe;            // SWEのセル幅
-float dx_apic;           // APICのセル幅
-int M_ratio;             // 解像度比 (M = dx_apic / dx_swe)
+float _dxSwe;            // SWEのセル幅
+float _dxApic;           // APICのセル幅
+int M_ratio;             // 解像度比 (M = _dxApic / _dxSwe)
 
 float base_mass;         // 粒子の基準質量
 float sea_bottom_z;      // 仮想水深（海底の基準高さ）

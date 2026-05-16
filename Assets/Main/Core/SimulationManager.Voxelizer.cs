@@ -127,8 +127,8 @@ public partial class SimulationManager
             voxelizerCS.SetTexture(kernelVoxSplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(kernelVoxSplatSWE, "VoxelGrid_Density", voxelGridBuffer);
             voxelizerCS.SetBuffer(kernelVoxSplatSWE, "SWE_State_Read", sweStateBufferRead);
-            voxelizerCS.SetInts("swe_grid_size", new int[] { sweGridRes.x, sweGridRes.y });
-            voxelizerCS.SetFloat("dx_swe", dxSwe);
+            voxelizerCS.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
+            voxelizerCS.SetFloat("_dxSwe", dxSwe);
             voxelizerCS.Dispatch(kernelVoxSplatSWE, tgVoxelX, tgVoxelY, tgVoxelZ);
 
             // =========================================================
