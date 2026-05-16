@@ -19,11 +19,9 @@ public partial class SimulationManager : MonoBehaviour
     public float dx_apic = 1.0f;
 
     [Header("Fluid Settings")]
-    public float rho = 1.0f;
     public float baseMass = 0.5f;
     public float seaBottomHeight = -3f; //浅水近似のための仮の水深
 
-    // --- 変数宣言部分にTooltipを追加 ---
     [Header("Sublimation & Condensation")]
     [Tooltip("APIC化(昇華)が発生するフルード数(流れの慣性力と重力の比)の閾値")]
     public float frThreshold = 1.0f; 
@@ -74,7 +72,7 @@ public partial class SimulationManager : MonoBehaviour
     // 計算負荷削減のための、生存粒子リストと間接ディスパッチ(DispatchIndirect)用バッファ
     private ComputeBuffer activeParticleListBuffer, activeParticleCountBuffer, particleDispatchArgsBuffer;
 
-    // --- カーネルIDのキャッシュ（毎フレームのFindKernelによる負荷を削減） ---
+    // --- カーネルIDのキャッシュ ---
     private int kernelSweClear;
     private int kernelSweShift, kernelSweInit, kernelSweApply, kernelSweInteract, kernelSweUpdate, kernelSweSublimate;
     private int kernelApicClear, kernelApicBuildList, kernelApicSetupArgs, kernelApicAdvect, kernelApicCondense;
@@ -184,8 +182,7 @@ public partial class SimulationManager : MonoBehaviour
             cs.SetInts("apic_grid_size", new int[] { apicGridWidth, apicGridDepth, apicGridHeight });
             cs.SetFloat("dx_swe", dx_swe);
             cs.SetFloat("dx_apic", dx_apic);
-            cs.SetInt("M_ratio", M_ratio);
-            cs.SetFloat("rho", rho);            
+            cs.SetInt("M_ratio", M_ratio);  
             cs.SetFloat("base_mass", baseMass);
             cs.SetFloat("sea_bottom_z", seaBottomHeight);
         }

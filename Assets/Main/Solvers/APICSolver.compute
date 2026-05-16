@@ -49,14 +49,11 @@ Texture2D<float4> FFT_DispLOD1;
 Texture2D<float4> FFT_DispLOD2;
 float FFT_Size0, FFT_Size1, FFT_Size2;
 
-groupshared float shared_dot[512]; // 8*8*8 = 512スレッド
-
 uint max_particles;
 float horizontal_momentum_transfer;
 float vertical_momentum_to_wave;
 
-SamplerState sampler_LinearRepeat
-{
+SamplerState sampler_LinearRepeat {
     Filter = MIN_MAG_MIP_LINEAR;
     AddressU = Wrap;
     AddressV = Wrap;
@@ -66,8 +63,7 @@ SamplerState sampler_LinearRepeat
 // ヘルパー関数群
 // ==========================================
 
-float GetFFTSurfaceY(float2 worldPos)
-{
+float GetFFTSurfaceY(float2 worldPos) {
     float2 uv0 = worldPos / FFT_Size0;
     float2 uv1 = worldPos / FFT_Size1;
     float2 uv2 = worldPos / FFT_Size2;
@@ -313,9 +309,9 @@ void ComputeDivergence (uint3 id : SV_DispatchThreadID)
     float div = (vR - vL + vU - vD + vF - vB) / (2.0f * dx_apic);
     
     // ポアソン方程式 Laplacian(p) = rhs の右辺
-    // rhs = - (rho * dx^2 / dt) * div(u) * theta
+    // rhs = - (dx^2 / dt) * div(u) * theta
     // ※thetaはSWEの境界（Fractional Volume）を考慮した係数
-    APIC_Divergence[idx] = -(rho * dx_apic * dx_apic / dt_apic) * div * theta_c;
+    APIC_Divergence[idx] = -(dx_apic * dx_apic / dt_apic) * div * theta_c;
 }
 
 // ==========================================
@@ -386,8 +382,8 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
                     float3 vel_star = float3(asfloat(APIC_Grid_VelX[flat_idx]), asfloat(APIC_Grid_VelY[flat_idx]), asfloat(APIC_Grid_VelZ[flat_idx]));
                     
                     // 投影法 (Projection Method): 圧力勾配を使って速度を補正
-                    // v_corrected = v_star - (dt / rho) * grad_p
-                    corrected_vel = vel_star - (dt_apic / rho) * grad_p;
+                    // v_corrected = v_star - dt * grad_p
+                    corrected_vel = vel_star - dt_apic * grad_p;
                 }
 
                 float3 d_pos = grid_pos - (float3)cell_idx;
@@ -517,9 +513,9 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
                     float delta_hu_wave = impact_energy * radial_dir.x * depth_factor;
                     float delta_hv_wave = impact_energy * radial_dir.y * depth_factor;
 
-                    float delta_h = (p.mass * weight) / (rho * swe_cell_area);
-                    float delta_hu = (delta_hu_mass + delta_hu_wave) / (rho * swe_cell_area);
-                    float delta_hv = (delta_hv_mass + delta_hv_wave) / (rho * swe_cell_area);
+                    float delta_h = (p.mass * weight) / swe_cell_area;
+                    float delta_hu = (delta_hu_mass + delta_hu_wave) / swe_cell_area;
+                    float delta_hv = (delta_hv_mass + delta_hv_wave) / swe_cell_area;
 
                     InterlockedAdd(Delta_H_Buffer[flat_idx],  (int)(delta_h * 10000.0f));
                     InterlockedAdd(Delta_HU_Buffer[flat_idx], (int)(delta_hu * 10000.0f));
@@ -578,14 +574,11 @@ void InitCG(uint3 id : SV_DispatchThreadID)
     PCG_Q[flatIdx] = 0;
 }
 
-// DotProduct 系 (DotProductPreconditioned, DotProductGeneric)
-// Shared Memory を用いた Parallel Reduction による内積計算
-// GPUの各スレッドグループ内で要素を足し合わせ、最後に代表スレッド(groupIndex==0)が
-// アトミック加算で全体の結果(PCG_DotResult)にまとめる。
+// Preconを掛ける内積
+groupshared float shared_dot[512];
 [numthreads(8, 8, 8)]
 void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 {
-    // 初期化
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
@@ -599,7 +592,6 @@ void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : 
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // 並列リダクション
     for (uint s = 256; s > 0; s >>= 1) {
         if (groupIndex < s) {
             shared_dot[groupIndex] += shared_dot[groupIndex + s];
@@ -607,12 +599,12 @@ void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : 
         GroupMemoryBarrierWithGroupSync();
     }
 
-    // スレッド0（代表者）だけがグローバルメモリに足し込む
     if (groupIndex == 0) {
         AtomicAddFloat(PCG_DotResult, 0, shared_dot[0]);
     }
 }
 
+// 汎用内積
 [numthreads(8, 8, 8)]
 void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) 
 {
@@ -627,7 +619,6 @@ void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_Grou
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // 並列リダクション
     for (uint s = 256; s > 0; s >>= 1) {
         if (groupIndex < s) {
             shared_dot[groupIndex] += shared_dot[groupIndex + s];
@@ -688,7 +679,6 @@ void ApplyA(uint3 id : SV_DispatchThreadID)
     }
     PCG_Q[flatIdx] = result;
 }
-
 
 [numthreads(1, 1, 1)]
 void CalculateAlpha(uint3 id : SV_DispatchThreadID) {

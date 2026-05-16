@@ -37,7 +37,6 @@ float dx_swe;            // SWEのセル幅
 float dx_apic;           // APICのセル幅
 int M_ratio;             // 解像度比 (M = dx_apic / dx_swe)
 
-float rho;               // 流体の密度
 float base_mass;         // 粒子の基準質量
 float sea_bottom_z;      // 仮想水深（海底の基準高さ）
 

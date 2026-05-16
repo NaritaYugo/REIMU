@@ -659,7 +659,7 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
         float delta_h = (current.h - h_min) * conversion_rate;
         if (delta_h < 0.05f) { SWE_State_Write[index] = current; return; }
 
-        float sublimated_mass = rho * delta_h * safe_dx * safe_dx; 
+        float sublimated_mass = delta_h * safe_dx * safe_dx; 
         uint count = (uint)max(1.0f, sublimated_mass / base_mass);
         count = min(count, 50);
 
@@ -714,7 +714,7 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
         }
 
         float actual_sublimated_mass = mass_per_particle * (float)spawned_count;
-        float actual_delta_h = actual_sublimated_mass / (rho * safe_dx * safe_dx);
+        float actual_delta_h = actual_sublimated_mass / (safe_dx * safe_dx);
         current.h -= actual_delta_h;
         float remain_ratio = (current.h > 0.001f) ? (current.h / (current.h + actual_delta_h)) : 0.0f;
         current.hu *= remain_ratio;
