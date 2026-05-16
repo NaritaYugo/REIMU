@@ -108,8 +108,9 @@ public partial class SimulationManager : MonoBehaviour
     [Header("Tracking")]
     public FFTManager fftOcean;
     public Transform trackTarget;
-    public Vector2 sweWorldOffset = Vector2.zero; 
-    public Vector3 apicWorldOffset = Vector3.zero;
+    
+    [HideInInspector] public Vector2 sweWorldOffset = Vector2.zero; 
+    [HideInInspector] public Vector3 apicWorldOffset = Vector3.zero;
 
     private float dxSwe, dxApic;
     private Vector2Int sweGridRes;
