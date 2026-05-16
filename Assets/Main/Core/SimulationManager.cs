@@ -216,10 +216,8 @@ public partial class SimulationManager : MonoBehaviour
     {
         if (buffers.sweStateRead == null || trackTarget == null) return;
 
-        // --- 動的タイムステップ(CFL条件)の計算 ---
+        // 動的タイムステップの計算 ---
         float dtApic = Mathf.Min(Time.deltaTime, 0.0333f);
-        
-        // サブサイクリング回数を決定するためのヒューリスティックな予測値
         float expected_max_depth = 50.0f;
         float expected_wave_speed = Mathf.Sqrt(9.81f * expected_max_depth);
         float expected_max_velocity = 15.0f; 
@@ -229,7 +227,7 @@ public partial class SimulationManager : MonoBehaviour
         int subSteps = Mathf.CeilToInt(dtApic / dtSwe_max);
         float dtSwe = dtApic / subSteps;
 
-        // 追従・地形処理は別ファイルに分割したメソッドを呼ぶ
+        // 追従・地形処理
         UpdateTrackingAndTerrain();
 
         ComputeShader[] shaders = { sweCS, apicCS };
@@ -550,7 +548,6 @@ public partial class SimulationManager : MonoBehaviour
     void OnDisable()
     {
         buffers.ReleaseAll();
-
         ReleaseTerrain();
     }
 }
