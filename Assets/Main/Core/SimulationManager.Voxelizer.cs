@@ -52,9 +52,9 @@ public partial class SimulationManager
         triTableBuffer = new ComputeBuffer(4096, sizeof(int));
         triTableBuffer.SetData(MarchingCubesTables.TriTable);
 
-        int gridX = apicGridWidth * meshResolutionMultiplier;
-        int gridY = apicGridDepth * meshResolutionMultiplier; 
-        int gridZ = apicGridHeight * meshResolutionMultiplier;
+        int gridX = apicGridRes.x * meshResolutionMultiplier;
+        int gridY = apicGridRes.y * meshResolutionMultiplier; 
+        int gridZ = apicGridRes.z * meshResolutionMultiplier;
         int totalVoxels = gridX * gridY * gridZ;
 
         voxelGridBuffer = new ComputeBuffer(totalVoxels, sizeof(int));
@@ -71,13 +71,13 @@ public partial class SimulationManager
 
     private void DispatchAndRenderVoxelizer()
     {
-        int gridX = apicGridWidth * meshResolutionMultiplier;
-        int gridY = apicGridDepth * meshResolutionMultiplier; 
-        int gridZ = apicGridHeight * meshResolutionMultiplier;
+        int gridX = apicGridRes.x * meshResolutionMultiplier;
+        int gridY = apicGridRes.y * meshResolutionMultiplier; 
+        int gridZ = apicGridRes.z * meshResolutionMultiplier;
         int tgVoxelX = (gridX + 7) / 8;
         int tgVoxelY = (gridY + 7) / 8;
         int tgVoxelZ = (gridZ + 7) / 8;
-        float currentCellSize = dx_apic / meshResolutionMultiplier;
+        float currentCellSize = dxApic / meshResolutionMultiplier;
 
         if (voxelizerCS != null) {
             voxelizerCS.SetVector("apic_world_offset", apicWorldOffset);
@@ -127,8 +127,8 @@ public partial class SimulationManager
             voxelizerCS.SetTexture(kernelVoxSplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(kernelVoxSplatSWE, "VoxelGrid_Density", voxelGridBuffer);
             voxelizerCS.SetBuffer(kernelVoxSplatSWE, "SWE_State_Read", sweStateBufferRead);
-            voxelizerCS.SetInts("swe_grid_size", new int[] { sweGridWidth, sweGridHeight });
-            voxelizerCS.SetFloat("dx_swe", dx_swe);
+            voxelizerCS.SetInts("swe_grid_size", new int[] { sweGridRes.x, sweGridRes.y });
+            voxelizerCS.SetFloat("dx_swe", dxSwe);
             voxelizerCS.Dispatch(kernelVoxSplatSWE, tgVoxelX, tgVoxelY, tgVoxelZ);
 
             // =========================================================
@@ -204,8 +204,8 @@ public partial class SimulationManager
             }
             if (sweStateBufferRead != null) {
                 fftOceanMaterial.SetBuffer("SWE_State_Buffer", sweStateBufferRead);
-                fftOceanMaterial.SetFloat("_swe_width", sweGridWidth);
-                fftOceanMaterial.SetFloat("_dx_swe", dx_swe);
+                fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
+                fftOceanMaterial.SetFloat("_dx_swe", dxSwe);
                 fftOceanMaterial.SetVector("_swe_world_offset", sweWorldOffset);
             }
             if (voxelFinalDensityBuffer != null) {

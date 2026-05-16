@@ -5,18 +5,17 @@ using FluidSimulation;
 public partial class SimulationManager : MonoBehaviour
 {
     [Header("Simulation Settings")]
-    public int sweGridWidth = 128;
-    public int sweGridHeight = 128;
-    public float dx_swe = 0.5f; // SWEが128*0.5、APICが64*1.0なので範囲は同じにしている
-    private int M_ratio; // 解像度比 (M = dx_apic / dx_swe)
+    [SerializeField] private Vector3Int m_DomainLength = new(64, 64, 64);
+    [SerializeField] private int m_SweCellsPerMeter = 2;
+    [SerializeField] private int m_ApicCellsPerMeter = 1;
+
+    private float dxSwe, dxApic;
+    private Vector2Int sweGridRes;
+    private Vector3Int apicGridRes;
+
+    private int M_ratio;
     public int maxParticles = 1000000;
     public int pcgIterations = 8;
-
-    [Header("APIC Settings")]
-    public int apicGridWidth = 64;
-    public int apicGridHeight = 64;
-    public int apicGridDepth = 64; 
-    public float dx_apic = 1.0f;
 
     [Header("Fluid Settings")]
     public float baseMass = 0.5f;
@@ -82,20 +81,25 @@ public partial class SimulationManager : MonoBehaviour
 
     void Start()
     {
+        dxSwe = 1/(float)m_SweCellsPerMeter;
+        dxApic = 1/(float)m_ApicCellsPerMeter;
+        sweGridRes = new Vector2Int(m_DomainLength.x, m_DomainLength.z) * m_SweCellsPerMeter;
+        apicGridRes = m_DomainLength * m_ApicCellsPerMeter;
+
         if (trackTarget != null)
         {
-            float targetBaseX = trackTarget.position.x - (sweGridWidth * dx_swe) * 0.5f;
-            float targetBaseZ = trackTarget.position.z - (sweGridHeight * dx_swe) * 0.5f;
+            float targetBaseX = trackTarget.position.x - sweGridRes.x * dxSwe * 0.5f;
+            float targetBaseZ = trackTarget.position.z - sweGridRes.y * dxSwe * 0.5f;
             sweWorldOffset = new Vector2(targetBaseX, targetBaseZ);
             apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, seaBottomHeight);
         }
 
-        M_ratio = (int)(dx_apic / dx_swe);
+        M_ratio = (int)(dxApic / dxSwe);
         
         CacheKernels();
         InitializeBuffers();
-        InitializeTerrain();   // Terrain.cs に分割したメソッド
-        InitializeVoxelizer(); // Voxelizer.cs に分割したメソッド
+        InitializeTerrain();
+        InitializeVoxelizer();
         BindBuffers();
     }
 
@@ -132,7 +136,7 @@ public partial class SimulationManager : MonoBehaviour
 
     private void InitializeBuffers()
     {
-        int sweTotalCells = sweGridWidth * sweGridHeight;
+        int sweTotalCells = sweGridRes.x * sweGridRes.y;
         sweStateBufferRead = new ComputeBuffer(sweTotalCells, Marshal.SizeOf(typeof(SWECell)));
         sweStateBufferWrite = new ComputeBuffer(sweTotalCells, Marshal.SizeOf(typeof(SWECell)));
         apicParticleBuffer = new ComputeBuffer(maxParticles, Marshal.SizeOf(typeof(APICParticle)), ComputeBufferType.Default);
@@ -140,7 +144,7 @@ public partial class SimulationManager : MonoBehaviour
         deltaHUBuffer = new ComputeBuffer(sweTotalCells, sizeof(uint));
         deltaHVBuffer = new ComputeBuffer(sweTotalCells, sizeof(uint));
 
-        int apicTotalCells = apicGridWidth * apicGridHeight * apicGridDepth;
+        int apicTotalCells = apicGridRes.x * apicGridRes.y * apicGridRes.z;
         apicGridMassBuffer = new ComputeBuffer(apicTotalCells, sizeof(uint));
         apicGridVelXBuffer = new ComputeBuffer(apicTotalCells, sizeof(uint));
         apicGridVelYBuffer = new ComputeBuffer(apicTotalCells, sizeof(uint));
@@ -178,10 +182,10 @@ public partial class SimulationManager : MonoBehaviour
         ComputeShader[] shaders = { sweCS, apicCS };
         foreach (var cs in shaders)
         {
-            cs.SetInts("swe_grid_size", new int[] { sweGridWidth, sweGridHeight });
-            cs.SetInts("apic_grid_size", new int[] { apicGridWidth, apicGridDepth, apicGridHeight });
-            cs.SetFloat("dx_swe", dx_swe);
-            cs.SetFloat("dx_apic", dx_apic);
+            cs.SetInts("swe_grid_size", new int[] { sweGridRes.x, sweGridRes.y });
+            cs.SetInts("apic_grid_size", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
+            cs.SetFloat("dx_swe", dxSwe);
+            cs.SetFloat("dx_apic", dxApic);
             cs.SetInt("M_ratio", M_ratio);  
             cs.SetFloat("base_mass", baseMass);
             cs.SetFloat("sea_bottom_z", seaBottomHeight);
@@ -205,7 +209,7 @@ public partial class SimulationManager : MonoBehaviour
         float expected_max_velocity = 15.0f; 
         
         // 波の速度がセルを飛び越えない安全なSWEの最大タイムステップを算出
-        float dt_swe_max = (0.20f * dx_swe) / (expected_wave_speed + expected_max_velocity); 
+        float dt_swe_max = (0.20f * dxSwe) / (expected_wave_speed + expected_max_velocity); 
         int subSteps = Mathf.CeilToInt(dt_apic / dt_swe_max);
         float dt_swe = dt_apic / subSteps;
 
@@ -253,11 +257,11 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetInt("mouse_active", mouseActive);
 
         // --- スレッドグループ数の計算 ---
-        int tgSWE_X = (sweGridWidth + 7) / 8;
-        int tgSWE_Y = (sweGridHeight + 7) / 8;
-        int tgAPIC_X = (apicGridWidth + 7) / 8;
-        int tgAPIC_Y = (apicGridDepth + 7) / 8;  
-        int tgAPIC_Z = (apicGridHeight + 7) / 8; 
+        int tgSWE_X = (sweGridRes.x + 7) / 8;
+        int tgSWE_Y = (sweGridRes.y + 7) / 8;
+        int tgAPIC_X = (apicGridRes.x + 7) / 8;
+        int tgAPIC_Y = (apicGridRes.z + 7) / 8;  
+        int tgAPIC_Z = (apicGridRes.y + 7) / 8; 
         int tgParticles = (maxParticles + 63) / 64;
 
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
