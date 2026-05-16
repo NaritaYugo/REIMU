@@ -43,18 +43,18 @@ public partial class SimulationManager
                 sweCS.SetVector("swe_world_offset", sweWorldOffset);
                 
                 if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
-                    sweCS.SetTexture(kernelSweShift, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
-                    sweCS.SetTexture(kernelSweShift, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
-                    sweCS.SetTexture(kernelSweShift, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+                    sweCS.SetTexture(sweKernels.ShiftSweGrid, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+                    sweCS.SetTexture(sweKernels.ShiftSweGrid, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+                    sweCS.SetTexture(sweKernels.ShiftSweGrid, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
                     sweCS.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
                     sweCS.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
                     sweCS.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
                 }
                 
-                sweCS.SetTexture(kernelSweShift, "TerrainHeightMap", terrainHeightMap); 
-                sweCS.SetBuffer(kernelSweShift, "SWE_State_Read", buffers.sweStateRead);
-                sweCS.SetBuffer(kernelSweShift, "SWE_State_Write", buffers.sweStateWrite);
-                sweCS.Dispatch(kernelSweShift, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
+                sweCS.SetTexture(sweKernels.ShiftSweGrid, "TerrainHeightMap", terrainHeightMap); 
+                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "SWE_State_Read", buffers.sweStateRead);
+                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "SWE_State_Write", buffers.sweStateWrite);
+                sweCS.Dispatch(sweKernels.ShiftSweGrid, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
                 SwapSWEBuffers();
             }
             
@@ -66,14 +66,14 @@ public partial class SimulationManager
             CaptureTerrainHeight();
             sweCS.SetVector("swe_world_offset", sweWorldOffset);
             
-            sweCS.SetTexture(kernelSweInit, "TerrainHeightMap", terrainHeightMap);
-            sweCS.SetBuffer(kernelSweInit, "SWE_State_Write", buffers.sweStateWrite);
+            sweCS.SetTexture(sweKernels.InitSwe, "TerrainHeightMap", terrainHeightMap);
+            sweCS.SetBuffer(sweKernels.InitSwe, "SWE_State_Write", buffers.sweStateWrite);
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
-                sweCS.SetTexture(kernelSweInit, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
-                sweCS.SetTexture(kernelSweInit, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
-                sweCS.SetTexture(kernelSweInit, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+                sweCS.SetTexture(sweKernels.InitSwe, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+                sweCS.SetTexture(sweKernels.InitSwe, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+                sweCS.SetTexture(sweKernels.InitSwe, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
             }
-            sweCS.Dispatch(kernelSweInit, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
+            sweCS.Dispatch(sweKernels.InitSwe, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
             
             SwapSWEBuffers();
             isSWEInitialized = true;

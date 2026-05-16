@@ -5,22 +5,40 @@ using FluidSimulation;
 
 public partial class SimulationManager : MonoBehaviour
 {
-    public class KernelSet
+    // キャッシュの一括取得用
+    public class ShaderKernels
     {
-        // public int ;
-        
         public void Initialize(ComputeShader cs)
         {
-            FieldInfo[] fields = GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
+            var fields = this.GetType().GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
             foreach (var field in fields)
             {
                 if (field.FieldType == typeof(int))
                 {
-                    int id = cs.FindKernel(field.Name);
-                    field.SetValue(this, id);
+                    if (cs.HasKernel(field.Name))
+                        field.SetValue(this, cs.FindKernel(field.Name));
+                    else
+                        Debug.LogError($"Kernel '{field.Name}' not found in {cs.name}");
                 }
             }
         }
+    }
+
+    public class ApicKernels : ShaderKernels
+    {
+        public int Advect, ClearApicGrid , P2G, NormalizeVel, Divergence, G2P, Condense, 
+            BuildDiag, InitCG, DotProductPrecon, InitRTr, ApplyA, DotProductGeneric, CalculateAlpha, 
+            UpdatePR, CalculateBeta, UpdateD, BuildActiveList, SetupDispatchArgs, SetupMeshDrawArgs;
+    }
+
+    public class SweKernels : ShaderKernels
+    {
+        public int ClearIntermediates, InitSwe, UpdateSwe, Sublimate, ApplyCondensation, InteractSwe, ShiftSweGrid;
+    }
+
+    public class VoxelizerKernels : ShaderKernels
+    {
+        public int ClearVoxelGrid, SplatParticles, SplatSWE, BlurX, BlurY, BlurZ, MarchingCubes;
     }
 
     // バッファの一括解放用
@@ -102,16 +120,10 @@ public partial class SimulationManager : MonoBehaviour
     private Vector2Int sweGridRes;
     private Vector3Int apicGridRes;
     private int M_ratio;
-
-    // --- カーネルIDのキャッシュ ---
-    private int kernelSweClear;
-    private int kernelSweShift, kernelSweInit, kernelSweApply, kernelSweInteract, kernelSweUpdate, kernelSweSublimate;
-    private int kernelApicClear, kernelApicBuildList, kernelApicSetupArgs, kernelApicAdvect, kernelApicCondense;
-    private int kernelApicP2G, kernelApicNormVel, kernelApicDiv, kernelApicBuildDiag, kernelApicInitCG;
-    private int kernelApicDotPre, kernelApicInitRTr, kernelApicApplyA, kernelApicDotGen, kernelApicCalcAlpha;
-    private int kernelApicUpdatePR, kernelApicCalcBeta, kernelApicUpdateD, kernelApicG2P;
     
-    private readonly KernelSet kernels = new();
+    private readonly ApicKernels apicKernels = new();
+    private readonly SweKernels sweKernels = new();
+    private readonly VoxelizerKernels voxKernels = new();
     private readonly BufferSet buffers = new();
 
     void Start()
@@ -130,43 +142,14 @@ public partial class SimulationManager : MonoBehaviour
         }
 
         M_ratio = (int)(dxApic / dxSwe);
+
+        sweKernels.Initialize(sweCS);
+        apicKernels.Initialize(apicCS);
         
-        CacheKernels();
         InitializeBuffers();
         InitializeTerrain();
         InitializeVoxelizer();
         BindBuffers();
-    }
-
-    private void CacheKernels()
-    {
-        kernelSweClear = sweCS.FindKernel("ClearIntermediateBuffers");
-        kernelSweShift = sweCS.FindKernel("ShiftSWEGrid");
-        kernelSweInit = sweCS.FindKernel("InitSWE");
-        kernelSweApply = sweCS.FindKernel("ApplyCondensation");
-        kernelSweInteract = sweCS.FindKernel("InteractSWE");
-        kernelSweUpdate = sweCS.FindKernel("UpdateSWE");
-        kernelSweSublimate = sweCS.FindKernel("SublimateSWEtoAPIC");
-
-        kernelApicClear = apicCS.FindKernel("ClearAPICGrid");
-        kernelApicBuildList = apicCS.FindKernel("BuildActiveParticleList");
-        kernelApicSetupArgs = apicCS.FindKernel("SetupParticleDispatchArgs");
-        kernelApicAdvect = apicCS.FindKernel("AdvectParticles");
-        kernelApicCondense = apicCS.FindKernel("CondenseParticles");
-        kernelApicP2G = apicCS.FindKernel("P2G_Transfer");
-        kernelApicNormVel = apicCS.FindKernel("NormalizeGridVelocity");
-        kernelApicDiv = apicCS.FindKernel("ComputeDivergence");
-        kernelApicBuildDiag = apicCS.FindKernel("BuildDiag");
-        kernelApicInitCG = apicCS.FindKernel("InitCG");
-        kernelApicDotPre = apicCS.FindKernel("DotProductPreconditioned");
-        kernelApicInitRTr = apicCS.FindKernel("ComputeInitialRTr");
-        kernelApicApplyA = apicCS.FindKernel("ApplyA");
-        kernelApicDotGen = apicCS.FindKernel("DotProductGeneric");
-        kernelApicCalcAlpha = apicCS.FindKernel("CalculateAlpha");
-        kernelApicUpdatePR = apicCS.FindKernel("UpdatePR");
-        kernelApicCalcBeta = apicCS.FindKernel("CalculateBeta");
-        kernelApicUpdateD = apicCS.FindKernel("UpdateD");
-        kernelApicG2P = apicCS.FindKernel("G2P_Transfer");
     }
 
     private void InitializeBuffers()
@@ -226,9 +209,9 @@ public partial class SimulationManager : MonoBehaviour
             cs.SetFloat("sea_bottom_z", seaBottomHeight);
         }
         
-        sweCS.SetBuffer(kernelSweClear, "Delta_H_Buffer", buffers.deltaH);
-        sweCS.SetBuffer(kernelSweClear, "Delta_HU_Buffer", buffers.deltaHU);
-        sweCS.SetBuffer(kernelSweClear, "Delta_HV_Buffer", buffers.deltaHV);
+        sweCS.SetBuffer(sweKernels.ClearIntermediates, "Delta_H_Buffer", buffers.deltaH);
+        sweCS.SetBuffer(sweKernels.ClearIntermediates, "Delta_HU_Buffer", buffers.deltaHU);
+        sweCS.SetBuffer(sweKernels.ClearIntermediates, "Delta_HV_Buffer", buffers.deltaHV);
     }
 
     void Update()
@@ -300,7 +283,7 @@ public partial class SimulationManager : MonoBehaviour
         int tgParticles = (maxParticles + 63) / 64;
 
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
-            int[] apicFFTKernels = { kernelApicBuildList, kernelApicCondense, kernelApicDiv, kernelApicBuildDiag };
+            int[] apicFFTKernels = { apicKernels.BuildActiveList, apicKernels.Condense, apicKernels.Divergence, apicKernels.BuildDiag };
             foreach (var k in apicFFTKernels) {
                 apicCS.SetTexture(k, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
                 apicCS.SetTexture(k, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
@@ -314,73 +297,73 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         // Step 1: バッファの初期化・クリア
         // =========================================================
-        sweCS.Dispatch(kernelSweClear, tgSWE_X, tgSWE_Y, 1);
+        sweCS.Dispatch(sweKernels.ClearIntermediates, tgSWE_X, tgSWE_Y, 1);
         
-        apicCS.SetBuffer(kernelApicClear, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntX", buffers.apicGridVelX);
-        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntY", buffers.apicGridVelY);
-        apicCS.SetBuffer(kernelApicClear, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.SetBuffer(kernelApicClear, "APIC_Divergence", buffers.apicDivergence);
-        apicCS.SetBuffer(kernelApicClear, "APIC_Pressure_Write", buffers.apicPressureWrite);
-        apicCS.Dispatch(kernelApicClear, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntX", buffers.apicGridVelX);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntY", buffers.apicGridVelY);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntZ", buffers.apicGridVelZ);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "APIC_Divergence", buffers.apicDivergence);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "APIC_Pressure_Write", buffers.apicPressureWrite);
+        apicCS.Dispatch(apicKernels.ClearApicGrid, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         // =========================================================
         // Step 2: 生存粒子のリスト構築と間接ディスパッチ(DispatchIndirect)の準備
         // 無駄な計算を省くため、生きているAPIC粒子だけを抽出する
         // =========================================================
         buffers.activeParticleList.SetCounterValue(0); 
-        apicCS.SetBuffer(kernelApicBuildList, "APIC_Particle_Buffer", buffers.apicParticle);
-        apicCS.SetBuffer(kernelApicBuildList, "ActiveParticleList_Write", buffers.activeParticleList);
+        apicCS.SetBuffer(apicKernels.BuildActiveList, "APIC_Particle_Buffer", buffers.apicParticle);
+        apicCS.SetBuffer(apicKernels.BuildActiveList, "ActiveParticleList_Write", buffers.activeParticleList);
         apicCS.SetInt("max_particles", maxParticles);
-        apicCS.Dispatch(kernelApicBuildList, tgParticles, 1, 1);
+        apicCS.Dispatch(apicKernels.BuildActiveList, tgParticles, 1, 1);
 
         ComputeBuffer.CopyCount(buffers.activeParticleList, buffers.activeParticleCount, 0);
         ComputeBuffer.CopyCount(buffers.activeParticleList, buffers.particleDispatchArgs, 0);
-        apicCS.SetBuffer(kernelApicSetupArgs, "ParticleDispatchArgs", buffers.particleDispatchArgs);
-        apicCS.Dispatch(kernelApicSetupArgs, 1, 1, 1);
+        apicCS.SetBuffer(apicKernels.SetupDispatchArgs, "ParticleDispatchArgs", buffers.particleDispatchArgs);
+        apicCS.Dispatch(apicKernels.SetupDispatchArgs, 1, 1, 1);
         
         // =========================================================
         // Step 3: APIC粒子の移流 (Advect)
         // 粒子を速度に従って移動させ、地形等との衝突判定を行う
         // =========================================================
-        apicCS.SetBuffer(kernelApicAdvect, "ActiveParticleList_Read", buffers.activeParticleList);
-        apicCS.SetBuffer(kernelApicAdvect, "ActiveParticleCount", buffers.activeParticleCount);
-        apicCS.SetBuffer(kernelApicAdvect, "APIC_Particle_Buffer", buffers.apicParticle);
-        apicCS.SetTexture(kernelApicAdvect, "TerrainHeightMap", terrainHeightMap);
-        apicCS.DispatchIndirect(kernelApicAdvect, buffers.particleDispatchArgs);
+        apicCS.SetBuffer(apicKernels.Advect, "ActiveParticleList_Read", buffers.activeParticleList);
+        apicCS.SetBuffer(apicKernels.Advect, "ActiveParticleCount", buffers.activeParticleCount);
+        apicCS.SetBuffer(apicKernels.Advect, "APIC_Particle_Buffer", buffers.apicParticle);
+        apicCS.SetTexture(apicKernels.Advect, "TerrainHeightMap", terrainHeightMap);
+        apicCS.DispatchIndirect(apicKernels.Advect, buffers.particleDispatchArgs);
 
         // =========================================================
         // Step 4: APIC → SWE 凝縮 (Condensation)
         // 水面に落下したAPIC粒子を消滅させ、運動量をSWEの中間バッファに書き込む
         // =========================================================
-        apicCS.SetTexture(kernelApicCondense, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicCondense, "ActiveParticleList_Read", buffers.activeParticleList);
-        apicCS.SetBuffer(kernelApicCondense, "ActiveParticleCount", buffers.activeParticleCount);
-        apicCS.SetBuffer(kernelApicCondense, "SWE_State_Read", buffers.sweStateRead);
-        apicCS.SetBuffer(kernelApicCondense, "Delta_H_Buffer", buffers.deltaH);
-        apicCS.SetBuffer(kernelApicCondense, "Delta_HU_Buffer", buffers.deltaHU);
-        apicCS.SetBuffer(kernelApicCondense, "Delta_HV_Buffer", buffers.deltaHV);
-        apicCS.SetBuffer(kernelApicCondense, "APIC_Particle_Buffer", buffers.apicParticle);
+        apicCS.SetTexture(apicKernels.Condense, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(apicKernels.Condense, "ActiveParticleList_Read", buffers.activeParticleList);
+        apicCS.SetBuffer(apicKernels.Condense, "ActiveParticleCount", buffers.activeParticleCount);
+        apicCS.SetBuffer(apicKernels.Condense, "SWE_State_Read", buffers.sweStateRead);
+        apicCS.SetBuffer(apicKernels.Condense, "Delta_H_Buffer", buffers.deltaH);
+        apicCS.SetBuffer(apicKernels.Condense, "Delta_HU_Buffer", buffers.deltaHU);
+        apicCS.SetBuffer(apicKernels.Condense, "Delta_HV_Buffer", buffers.deltaHV);
+        apicCS.SetBuffer(apicKernels.Condense, "APIC_Particle_Buffer", buffers.apicParticle);
         apicCS.SetFloat("horizontal_momentum_transfer", horizontalMomentumTransfer);
         apicCS.SetFloat("vertical_momentum_to_wave", verticalMomentumToWave);
-        apicCS.DispatchIndirect(kernelApicCondense, buffers.particleDispatchArgs);
+        apicCS.DispatchIndirect(apicKernels.Condense, buffers.particleDispatchArgs);
 
         // =========================================================
         // Step 5: SWE 凝縮・マウスインタラクションの適用
         // 中間バッファに溜まった凝縮の衝撃やマウスの力をSWE本体のステートに反映する
         // =========================================================
-        sweCS.SetBuffer(kernelSweApply, "SWE_State_Read", buffers.sweStateRead);
-        sweCS.SetBuffer(kernelSweApply, "SWE_State_Write", buffers.sweStateWrite);
-        sweCS.SetBuffer(kernelSweApply, "Delta_H_Buffer", buffers.deltaH);
-        sweCS.SetBuffer(kernelSweApply, "Delta_HU_Buffer", buffers.deltaHU);
-        sweCS.SetBuffer(kernelSweApply, "Delta_HV_Buffer", buffers.deltaHV);
-        sweCS.Dispatch(kernelSweApply, tgSWE_X, tgSWE_Y, 1);
+        sweCS.SetBuffer(sweKernels.ApplyCondensation, "SWE_State_Read", buffers.sweStateRead);
+        sweCS.SetBuffer(sweKernels.ApplyCondensation, "SWE_State_Write", buffers.sweStateWrite);
+        sweCS.SetBuffer(sweKernels.ApplyCondensation, "Delta_H_Buffer", buffers.deltaH);
+        sweCS.SetBuffer(sweKernels.ApplyCondensation, "Delta_HU_Buffer", buffers.deltaHU);
+        sweCS.SetBuffer(sweKernels.ApplyCondensation, "Delta_HV_Buffer", buffers.deltaHV);
+        sweCS.Dispatch(sweKernels.ApplyCondensation, tgSWE_X, tgSWE_Y, 1);
         SwapSWEBuffers();
 
         if (mouseActive == 1) {
-            sweCS.SetBuffer(kernelSweInteract, "SWE_State_Read", buffers.sweStateRead);
-            sweCS.SetBuffer(kernelSweInteract, "SWE_State_Write", buffers.sweStateWrite);
-            sweCS.Dispatch(kernelSweInteract, tgSWE_X, tgSWE_Y, 1);
+            sweCS.SetBuffer(sweKernels.InteractSwe, "SWE_State_Read", buffers.sweStateRead);
+            sweCS.SetBuffer(sweKernels.InteractSwe, "SWE_State_Write", buffers.sweStateWrite);
+            sweCS.Dispatch(sweKernels.InteractSwe, tgSWE_X, tgSWE_Y, 1);
             SwapSWEBuffers();
         }
 
@@ -388,21 +371,21 @@ public partial class SimulationManager : MonoBehaviour
         // Step 6: SWE サブサイクリング更新
         // 高速な波の伝播を安定させるため、細かいタイムステップで複数回更新する
         // =========================================================
-        sweCS.SetTexture(kernelSweUpdate, "TerrainHeightMap", terrainHeightMap);
-        sweCS.SetTexture(kernelSweSublimate, "TerrainHeightMap", terrainHeightMap);
+        sweCS.SetTexture(sweKernels.UpdateSwe, "TerrainHeightMap", terrainHeightMap);
+        sweCS.SetTexture(sweKernels.Sublimate, "TerrainHeightMap", terrainHeightMap);
         
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
-            sweCS.SetTexture(kernelSweUpdate, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
-            sweCS.SetTexture(kernelSweUpdate, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
-            sweCS.SetTexture(kernelSweUpdate, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
+            sweCS.SetTexture(sweKernels.UpdateSwe, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
+            sweCS.SetTexture(sweKernels.UpdateSwe, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
+            sweCS.SetTexture(sweKernels.UpdateSwe, "FFT_DispLOD2", fftOcean.displacementMaps[2]);
             sweCS.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
             sweCS.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
             sweCS.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
         }
         for (int i = 0; i < subSteps; i++) {
-            sweCS.SetBuffer(kernelSweUpdate, "SWE_State_Read", buffers.sweStateRead);
-            sweCS.SetBuffer(kernelSweUpdate, "SWE_State_Write", buffers.sweStateWrite);
-            sweCS.Dispatch(kernelSweUpdate, tgSWE_X, tgSWE_Y, 1);
+            sweCS.SetBuffer(sweKernels.UpdateSwe, "SWE_State_Read", buffers.sweStateRead);
+            sweCS.SetBuffer(sweKernels.UpdateSwe, "SWE_State_Write", buffers.sweStateWrite);
+            sweCS.Dispatch(sweKernels.UpdateSwe, tgSWE_X, tgSWE_Y, 1);
             SwapSWEBuffers();
         }
 
@@ -417,75 +400,75 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetFloat("push_z_multiplier", pushZMultiplier);
         sweCS.SetFloat("splash_velocity_multiplier", splashVelocityMultiplier);
         sweCS.SetInt("max_particles", maxParticles);
-        sweCS.SetBuffer(kernelSweSublimate, "SWE_State_Read", buffers.sweStateRead);
-        sweCS.SetBuffer(kernelSweSublimate, "SWE_State_Write", buffers.sweStateWrite);
-        sweCS.SetBuffer(kernelSweSublimate, "APIC_Particle_Buffer", buffers.apicParticle);
-        sweCS.SetBuffer(kernelSweSublimate, "ParticleCounter", buffers.particleCounter);
-        sweCS.Dispatch(kernelSweSublimate, tgSWE_X, tgSWE_Y, 1);
+        sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Read", buffers.sweStateRead);
+        sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Write", buffers.sweStateWrite);
+        sweCS.SetBuffer(sweKernels.Sublimate, "APIC_Particle_Buffer", buffers.apicParticle);
+        sweCS.SetBuffer(sweKernels.Sublimate, "ParticleCounter", buffers.particleCounter);
+        sweCS.Dispatch(sweKernels.Sublimate, tgSWE_X, tgSWE_Y, 1);
         SwapSWEBuffers();
 
         // =========================================================
         // Step 8: APIC P2G (Particle to Grid)
         // 粒子の持つ質量と運動量を、圧力計算用の3Dグリッドに転写する
         // =========================================================
-        apicCS.SetBuffer(kernelApicP2G, "ActiveParticleList_Read", buffers.activeParticleList);
-        apicCS.SetBuffer(kernelApicP2G, "ActiveParticleCount", buffers.activeParticleCount);
-        apicCS.SetBuffer(kernelApicP2G, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntX", buffers.apicGridVelX);
-        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntY", buffers.apicGridVelY);
-        apicCS.SetBuffer(kernelApicP2G, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.SetBuffer(kernelApicP2G, "APIC_Particle_Buffer", buffers.apicParticle);
-        apicCS.DispatchIndirect(kernelApicP2G, buffers.particleDispatchArgs);
+        apicCS.SetBuffer(apicKernels.P2G, "ActiveParticleList_Read", buffers.activeParticleList);
+        apicCS.SetBuffer(apicKernels.P2G, "ActiveParticleCount", buffers.activeParticleCount);
+        apicCS.SetBuffer(apicKernels.P2G, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.P2G, "_ApicVelIntX", buffers.apicGridVelX);
+        apicCS.SetBuffer(apicKernels.P2G, "_ApicVelIntY", buffers.apicGridVelY);
+        apicCS.SetBuffer(apicKernels.P2G, "_ApicVelIntZ", buffers.apicGridVelZ);
+        apicCS.SetBuffer(apicKernels.P2G, "APIC_Particle_Buffer", buffers.apicParticle);
+        apicCS.DispatchIndirect(apicKernels.P2G, buffers.particleDispatchArgs);
 
         // =========================================================
         // Step 9: APIC 速度の正規化と発散(Divergence)計算
         // グリッドの速度を質量で割り、非圧縮性流体のための発散を計算する
         // =========================================================
-        apicCS.SetBuffer(kernelApicNormVel, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntX", buffers.apicGridVelX);
-        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntY", buffers.apicGridVelY);
-        apicCS.SetBuffer(kernelApicNormVel, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.Dispatch(kernelApicNormVel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntX", buffers.apicGridVelX);
+        apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntY", buffers.apicGridVelY);
+        apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntZ", buffers.apicGridVelZ);
+        apicCS.Dispatch(apicKernels.NormalizeVel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-        apicCS.SetTexture(kernelApicDiv, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntX", buffers.apicGridVelX);
-        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntY", buffers.apicGridVelY);
-        apicCS.SetBuffer(kernelApicDiv, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.SetBuffer(kernelApicDiv, "APIC_Divergence", buffers.apicDivergence);
-        apicCS.SetBuffer(kernelApicDiv, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicDiv, "SWE_State_Read", buffers.sweStateRead);
-        apicCS.Dispatch(kernelApicDiv, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetTexture(apicKernels.Divergence, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(apicKernels.Divergence, "_ApicVelIntX", buffers.apicGridVelX);
+        apicCS.SetBuffer(apicKernels.Divergence, "_ApicVelIntY", buffers.apicGridVelY);
+        apicCS.SetBuffer(apicKernels.Divergence, "_ApicVelIntZ", buffers.apicGridVelZ);
+        apicCS.SetBuffer(apicKernels.Divergence, "APIC_Divergence", buffers.apicDivergence);
+        apicCS.SetBuffer(apicKernels.Divergence, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.Divergence, "SWE_State_Read", buffers.sweStateRead);
+        apicCS.Dispatch(apicKernels.Divergence, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         // =========================================================
         // Step 10: APIC 圧力計算(Jacobi-PCG法)の初期化
         // =========================================================
         buffers.pcgDotResult.SetData(new uint[] { 0 });
-        apicCS.SetBuffer(kernelApicBuildDiag, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicBuildDiag, "PCG_Precon", buffers.pcgPrecon);
-        apicCS.SetTexture(kernelApicBuildDiag, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicBuildDiag, "SWE_State_Read", buffers.sweStateRead);
-        apicCS.Dispatch(kernelApicBuildDiag, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetBuffer(apicKernels.BuildDiag, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.BuildDiag, "PCG_Precon", buffers.pcgPrecon);
+        apicCS.SetTexture(apicKernels.BuildDiag, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(apicKernels.BuildDiag, "SWE_State_Read", buffers.sweStateRead);
+        apicCS.Dispatch(apicKernels.BuildDiag, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-        apicCS.SetTexture(kernelApicInitCG, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicInitCG, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicInitCG, "APIC_Divergence", buffers.apicDivergence);
-        apicCS.SetBuffer(kernelApicInitCG, "APIC_Pressure_Write", buffers.apicPressureWrite); 
-        apicCS.SetBuffer(kernelApicInitCG, "PCG_R", buffers.pcgR);
-        apicCS.SetBuffer(kernelApicInitCG, "PCG_P", buffers.pcgP);
-        apicCS.SetBuffer(kernelApicInitCG, "PCG_Q", buffers.pcgQ);
-        apicCS.SetBuffer(kernelApicInitCG, "PCG_Precon", buffers.pcgPrecon);
-        apicCS.Dispatch(kernelApicInitCG, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetTexture(apicKernels.InitCG, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(apicKernels.InitCG, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.InitCG, "APIC_Divergence", buffers.apicDivergence);
+        apicCS.SetBuffer(apicKernels.InitCG, "APIC_Pressure_Write", buffers.apicPressureWrite); 
+        apicCS.SetBuffer(apicKernels.InitCG, "PCG_R", buffers.pcgR);
+        apicCS.SetBuffer(apicKernels.InitCG, "PCG_P", buffers.pcgP);
+        apicCS.SetBuffer(apicKernels.InitCG, "PCG_Q", buffers.pcgQ);
+        apicCS.SetBuffer(apicKernels.InitCG, "PCG_Precon", buffers.pcgPrecon);
+        apicCS.Dispatch(apicKernels.InitCG, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-        apicCS.SetTexture(kernelApicDotPre, "TerrainHeightMap", terrainHeightMap);
-        apicCS.SetBuffer(kernelApicDotPre, "_ApicMassInt", buffers.apicGridMass);
-        apicCS.SetBuffer(kernelApicDotPre, "PCG_R", buffers.pcgR);
-        apicCS.SetBuffer(kernelApicDotPre, "PCG_Precon", buffers.pcgPrecon);
-        apicCS.SetBuffer(kernelApicDotPre, "PCG_DotResult", buffers.pcgDotResult);
-        apicCS.Dispatch(kernelApicDotPre, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.SetTexture(apicKernels.DotProductPrecon, "TerrainHeightMap", terrainHeightMap);
+        apicCS.SetBuffer(apicKernels.DotProductPrecon, "_ApicMassInt", buffers.apicGridMass);
+        apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_R", buffers.pcgR);
+        apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_Precon", buffers.pcgPrecon);
+        apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_DotResult", buffers.pcgDotResult);
+        apicCS.Dispatch(apicKernels.DotProductPrecon, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-        apicCS.SetBuffer(kernelApicInitRTr, "PCG_DotResult", buffers.pcgDotResult);
-        apicCS.SetBuffer(kernelApicInitRTr, "PCG_Scalars", buffers.pcgScalars);
-        apicCS.Dispatch(kernelApicInitRTr, 1, 1, 1);
+        apicCS.SetBuffer(apicKernels.InitRTr, "PCG_DotResult", buffers.pcgDotResult);
+        apicCS.SetBuffer(apicKernels.InitRTr, "PCG_Scalars", buffers.pcgScalars);
+        apicCS.Dispatch(apicKernels.InitRTr, 1, 1, 1);
 
         // =========================================================
         // Step 11: APIC 圧力ポアソン方程式の反復計算 (PCGループ)
@@ -493,65 +476,65 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         for (int i = 0; i < pcgIterations; i++)
         {
-            apicCS.SetBuffer(kernelApicApplyA, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(kernelApicApplyA, "PCG_P", buffers.pcgP);
-            apicCS.SetBuffer(kernelApicApplyA, "PCG_Q", buffers.pcgQ);
-            apicCS.SetTexture(kernelApicApplyA, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicApplyA, "SWE_State_Read", buffers.sweStateRead);
-            apicCS.Dispatch(kernelApicApplyA, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.SetBuffer(apicKernels.ApplyA, "_ApicMassInt", buffers.apicGridMass);
+            apicCS.SetBuffer(apicKernels.ApplyA, "PCG_P", buffers.pcgP);
+            apicCS.SetBuffer(apicKernels.ApplyA, "PCG_Q", buffers.pcgQ);
+            apicCS.SetTexture(apicKernels.ApplyA, "TerrainHeightMap", terrainHeightMap);
+            apicCS.SetBuffer(apicKernels.ApplyA, "SWE_State_Read", buffers.sweStateRead);
+            apicCS.Dispatch(apicKernels.ApplyA, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-            apicCS.SetTexture(kernelApicDotGen, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicDotGen, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(kernelApicDotGen, "PCG_P", buffers.pcgP);
-            apicCS.SetBuffer(kernelApicDotGen, "PCG_Q", buffers.pcgQ);
-            apicCS.SetBuffer(kernelApicDotGen, "PCG_DotResult", buffers.pcgDotResult);
-            apicCS.Dispatch(kernelApicDotGen, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.SetTexture(apicKernels.DotProductGeneric, "TerrainHeightMap", terrainHeightMap);
+            apicCS.SetBuffer(apicKernels.DotProductGeneric, "_ApicMassInt", buffers.apicGridMass);
+            apicCS.SetBuffer(apicKernels.DotProductGeneric, "PCG_P", buffers.pcgP);
+            apicCS.SetBuffer(apicKernels.DotProductGeneric, "PCG_Q", buffers.pcgQ);
+            apicCS.SetBuffer(apicKernels.DotProductGeneric, "PCG_DotResult", buffers.pcgDotResult);
+            apicCS.Dispatch(apicKernels.DotProductGeneric, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-            apicCS.SetBuffer(kernelApicCalcAlpha, "PCG_DotResult", buffers.pcgDotResult);
-            apicCS.SetBuffer(kernelApicCalcAlpha, "PCG_Scalars", buffers.pcgScalars);
-            apicCS.Dispatch(kernelApicCalcAlpha, 1, 1, 1);
+            apicCS.SetBuffer(apicKernels.CalculateAlpha, "PCG_DotResult", buffers.pcgDotResult);
+            apicCS.SetBuffer(apicKernels.CalculateAlpha, "PCG_Scalars", buffers.pcgScalars);
+            apicCS.Dispatch(apicKernels.CalculateAlpha, 1, 1, 1);
 
-            apicCS.SetTexture(kernelApicUpdatePR, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicUpdatePR, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(kernelApicUpdatePR, "APIC_Pressure_Write", buffers.apicPressureWrite);
-            apicCS.SetBuffer(kernelApicUpdatePR, "PCG_P", buffers.pcgP);
-            apicCS.SetBuffer(kernelApicUpdatePR, "PCG_Q", buffers.pcgQ);
-            apicCS.SetBuffer(kernelApicUpdatePR, "PCG_R", buffers.pcgR);
-            apicCS.SetBuffer(kernelApicUpdatePR, "PCG_Scalars", buffers.pcgScalars);
-            apicCS.Dispatch(kernelApicUpdatePR, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.SetTexture(apicKernels.UpdatePR, "TerrainHeightMap", terrainHeightMap);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "_ApicMassInt", buffers.apicGridMass);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "APIC_Pressure_Write", buffers.apicPressureWrite);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "PCG_P", buffers.pcgP);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "PCG_Q", buffers.pcgQ);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "PCG_R", buffers.pcgR);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "PCG_Scalars", buffers.pcgScalars);
+            apicCS.Dispatch(apicKernels.UpdatePR, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-            apicCS.SetBuffer(kernelApicDotPre, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(kernelApicDotPre, "PCG_R", buffers.pcgR);
-            apicCS.SetBuffer(kernelApicDotPre, "PCG_Precon", buffers.pcgPrecon);
-            apicCS.SetBuffer(kernelApicDotPre, "PCG_DotResult", buffers.pcgDotResult);
-            apicCS.Dispatch(kernelApicDotPre, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.SetBuffer(apicKernels.DotProductPrecon, "_ApicMassInt", buffers.apicGridMass);
+            apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_R", buffers.pcgR);
+            apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_Precon", buffers.pcgPrecon);
+            apicCS.SetBuffer(apicKernels.DotProductPrecon, "PCG_DotResult", buffers.pcgDotResult);
+            apicCS.Dispatch(apicKernels.DotProductPrecon, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
-            apicCS.SetBuffer(kernelApicCalcBeta, "PCG_DotResult", buffers.pcgDotResult);
-            apicCS.SetBuffer(kernelApicCalcBeta, "PCG_Scalars", buffers.pcgScalars);
-            apicCS.Dispatch(kernelApicCalcBeta, 1, 1, 1);
+            apicCS.SetBuffer(apicKernels.CalculateBeta, "PCG_DotResult", buffers.pcgDotResult);
+            apicCS.SetBuffer(apicKernels.CalculateBeta, "PCG_Scalars", buffers.pcgScalars);
+            apicCS.Dispatch(apicKernels.CalculateBeta, 1, 1, 1);
 
-            apicCS.SetTexture(kernelApicUpdateD, "TerrainHeightMap", terrainHeightMap);
-            apicCS.SetBuffer(kernelApicUpdateD, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(kernelApicUpdateD, "PCG_P", buffers.pcgP);
-            apicCS.SetBuffer(kernelApicUpdateD, "PCG_R", buffers.pcgR);
-            apicCS.SetBuffer(kernelApicUpdateD, "PCG_Precon", buffers.pcgPrecon);
-            apicCS.SetBuffer(kernelApicUpdateD, "PCG_Scalars", buffers.pcgScalars);
-            apicCS.Dispatch(kernelApicUpdateD, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.SetTexture(apicKernels.UpdateD, "TerrainHeightMap", terrainHeightMap);
+            apicCS.SetBuffer(apicKernels.UpdateD, "_ApicMassInt", buffers.apicGridMass);
+            apicCS.SetBuffer(apicKernels.UpdateD, "PCG_P", buffers.pcgP);
+            apicCS.SetBuffer(apicKernels.UpdateD, "PCG_R", buffers.pcgR);
+            apicCS.SetBuffer(apicKernels.UpdateD, "PCG_Precon", buffers.pcgPrecon);
+            apicCS.SetBuffer(apicKernels.UpdateD, "PCG_Scalars", buffers.pcgScalars);
+            apicCS.Dispatch(apicKernels.UpdateD, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
         }
 
         // =========================================================
         // Step 12: APIC G2P (Grid to Particle)
         // 計算された圧力から速度場を修正し、粒子の速度とアフィン行列を更新する
         // =========================================================
-        apicCS.SetBuffer(kernelApicG2P, "ActiveParticleList_Read", buffers.activeParticleList);
-        apicCS.SetBuffer(kernelApicG2P, "ActiveParticleCount", buffers.activeParticleCount);
-        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntX", buffers.apicGridVelX);
-        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntY", buffers.apicGridVelY);
-        apicCS.SetBuffer(kernelApicG2P, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.SetBuffer(kernelApicG2P, "APIC_Pressure_Write", buffers.apicPressureWrite);
-        apicCS.SetBuffer(kernelApicG2P, "APIC_Particle_Buffer", buffers.apicParticle);
-        apicCS.SetTexture(kernelApicG2P, "TerrainHeightMap", terrainHeightMap);
-        apicCS.DispatchIndirect(kernelApicG2P, buffers.particleDispatchArgs);
+        apicCS.SetBuffer(apicKernels.G2P, "ActiveParticleList_Read", buffers.activeParticleList);
+        apicCS.SetBuffer(apicKernels.G2P, "ActiveParticleCount", buffers.activeParticleCount);
+        apicCS.SetBuffer(apicKernels.G2P, "_ApicVelIntX", buffers.apicGridVelX);
+        apicCS.SetBuffer(apicKernels.G2P, "_ApicVelIntY", buffers.apicGridVelY);
+        apicCS.SetBuffer(apicKernels.G2P, "_ApicVelIntZ", buffers.apicGridVelZ);
+        apicCS.SetBuffer(apicKernels.G2P, "APIC_Pressure_Write", buffers.apicPressureWrite);
+        apicCS.SetBuffer(apicKernels.G2P, "APIC_Particle_Buffer", buffers.apicParticle);
+        apicCS.SetTexture(apicKernels.G2P, "TerrainHeightMap", terrainHeightMap);
+        apicCS.DispatchIndirect(apicKernels.G2P, buffers.particleDispatchArgs);
 
         // =========================================================
         // Step 13: ボクセル化と描画処理へ
@@ -571,6 +554,5 @@ public partial class SimulationManager : MonoBehaviour
         buffers.ReleaseAll();
 
         ReleaseTerrain();
-        ReleaseVoxelizer();
     }
 }

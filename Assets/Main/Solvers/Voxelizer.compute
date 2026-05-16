@@ -1,4 +1,4 @@
-#pragma kernel ClearGrid
+#pragma kernel ClearVoxelGrid
 #pragma kernel SplatParticles
 #pragma kernel SplatSWE
 #pragma kernel BlurX
@@ -71,7 +71,7 @@ inline float3 GetVoxelOrigin() {
 }
 
 [numthreads(8,8,8)]
-void ClearGrid(uint3 id : SV_DispatchThreadID) {
+void ClearVoxelGrid(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
     int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
     VoxelGrid_Density[flatIdx] = 0;

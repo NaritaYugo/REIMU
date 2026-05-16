@@ -1,10 +1,10 @@
-#pragma kernel ClearIntermediateBuffers
-#pragma kernel InitSWE
-#pragma kernel UpdateSWE
-#pragma kernel SublimateSWEtoAPIC
+#pragma kernel ClearIntermediates
+#pragma kernel InitSwe
+#pragma kernel UpdateSwe
+#pragma kernel Sublimate
 #pragma kernel ApplyCondensation
-#pragma kernel InteractSWE
-#pragma kernel ShiftSWEGrid
+#pragma kernel InteractSwe
+#pragma kernel ShiftSweGrid
 
 #include "CSCommon.cginc"
 
@@ -206,7 +206,7 @@ inline float3 HLL_FluxY(float3 UB, float3 UT) {
 }
 
 [numthreads(8, 8, 1)]
-void InitSWE(uint3 id : SV_DispatchThreadID) {
+void InitSwe(uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     if (id.x >= (uint)grid_w || id.y >= (uint)grid_h) return;
@@ -227,10 +227,10 @@ void InitSWE(uint3 id : SV_DispatchThreadID) {
 }
 
 // ==========================================
-// メイン演算カーネル (UpdateSWE)
+// メイン演算カーネル (UpdateSwe)
 // ==========================================
 [numthreads(8, 8, 1)]
-void UpdateSWE (uint3 id : SV_DispatchThreadID) {
+void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y; 
     int ix = (int)id.x;
@@ -546,7 +546,7 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID) {
 // 昇華カーネル (SWE -> APIC)
 // ==========================================
 [numthreads(8, 8, 1)]
-void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID) {
+void Sublimate (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
@@ -720,7 +720,7 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8, 8, 1)]
-void InteractSWE (uint3 id : SV_DispatchThreadID) {
+void InteractSwe (uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     uint index = id.y * _SweGridRes.x + id.x;
@@ -742,7 +742,7 @@ void InteractSWE (uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8, 8, 1)]
-void ShiftSWEGrid(uint3 id : SV_DispatchThreadID) {
+void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
@@ -771,7 +771,7 @@ void ShiftSWEGrid(uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8, 8, 1)]
-void ClearIntermediateBuffers (uint3 id : SV_DispatchThreadID) {
+void ClearIntermediates (uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= (uint2)_SweGridRes)) return;
     
     uint index = id.y * _SweGridRes.x + id.x;

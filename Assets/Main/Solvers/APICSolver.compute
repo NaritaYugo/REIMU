@@ -1,22 +1,22 @@
-#pragma kernel AdvectParticles
-#pragma kernel ClearAPICGrid 
-#pragma kernel P2G_Transfer
-#pragma kernel NormalizeGridVelocity
-#pragma kernel ComputeDivergence
-#pragma kernel G2P_Transfer
-#pragma kernel CondenseParticles
+#pragma kernel Advect
+#pragma kernel ClearApicGrid 
+#pragma kernel P2G
+#pragma kernel NormalizeVel
+#pragma kernel Divergence
+#pragma kernel G2P
+#pragma kernel Condense
 #pragma kernel BuildDiag
 #pragma kernel InitCG
-#pragma kernel DotProductPreconditioned
-#pragma kernel ComputeInitialRTr
+#pragma kernel DotProductPrecon
+#pragma kernel InitRTr
 #pragma kernel ApplyA
 #pragma kernel DotProductGeneric
 #pragma kernel CalculateAlpha
 #pragma kernel UpdatePR
 #pragma kernel CalculateBeta
 #pragma kernel UpdateD
-#pragma kernel BuildActiveParticleList
-#pragma kernel SetupParticleDispatchArgs
+#pragma kernel BuildActiveList
+#pragma kernel SetupDispatchArgs
 #pragma kernel SetupMeshDrawArgs
 
 #include "CSCommon.cginc"
@@ -147,7 +147,7 @@ inline bool IsObstacle(uint3 id) {
 // 1. 移流 (Advection)
 // ==========================================
 [numthreads(64, 1, 1)]
-void AdvectParticles (uint3 id : SV_DispatchThreadID) {
+void Advect (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -193,7 +193,7 @@ void AdvectParticles (uint3 id : SV_DispatchThreadID) {
 // 2. 粒子から格子への転写 (P2G: Particle to Grid)
 // ==========================================
 [numthreads(64, 1, 1)]
-void P2G_Transfer (uint3 id : SV_DispatchThreadID) {
+void P2G (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -250,7 +250,7 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8, 8, 8)]
-void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID) {
+void NormalizeVel (uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_ApicGridRes)) return;
     uint idx = GetGridIndex(id);
     
@@ -278,7 +278,7 @@ void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID) {
 // 圧力方程式の右辺(RHS)を作る。流体がどれくらい圧縮・膨張しようとしているか。
 // ==========================================
 [numthreads(8, 8, 8)]
-void ComputeDivergence (uint3 id : SV_DispatchThreadID) {
+void Divergence (uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_ApicGridRes) || IsObstacle(id)) return;
     uint idx = GetGridIndex(id);
 
@@ -312,7 +312,7 @@ void ComputeDivergence (uint3 id : SV_DispatchThreadID) {
 // 圧力(p)を用いて速度場を非圧縮(発散ゼロ)に修正し、粒子に書き戻す。
 // ==========================================
 [numthreads(64, 1, 1)]
-void G2P_Transfer (uint3 id : SV_DispatchThreadID) {
+void G2P (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -409,7 +409,7 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(8, 8, 8)]
-void ClearAPICGrid (uint3 id : SV_DispatchThreadID) {
+void ClearApicGrid (uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_ApicGridRes)) return;
     uint idx = GetGridIndex(id);
     _ApicMassInt[idx] = 0; _ApicVelIntX[idx] = 0; _ApicVelIntY[idx] = 0; _ApicVelIntZ[idx] = 0;
@@ -421,7 +421,7 @@ void ClearAPICGrid (uint3 id : SV_DispatchThreadID) {
 // 水面に落下したAPIC粒子をSWEの波(h, hu, hv)に変換する
 // ==========================================
 [numthreads(64, 1, 1)]
-void CondenseParticles (uint3 id : SV_DispatchThreadID) {
+void Condense (uint3 id : SV_DispatchThreadID) {
     uint count = ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
@@ -565,7 +565,7 @@ void InitCG(uint3 id : SV_DispatchThreadID) {
 // Preconを掛ける内積
 groupshared float shared_dot[512];
 [numthreads(8, 8, 8)]
-void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) {
+void DotProductPrecon(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex) {
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
@@ -618,7 +618,7 @@ void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_Grou
 }
 
 [numthreads(1, 1, 1)]
-void ComputeInitialRTr(uint3 id : SV_DispatchThreadID) {
+void InitRTr(uint3 id : SV_DispatchThreadID) {
     PCG_Scalars[0] = asfloat(PCG_DotResult[0]); 
     PCG_DotResult[0] = 0; 
 }
@@ -701,13 +701,13 @@ void UpdateD(uint3 id : SV_DispatchThreadID) {
 }
 
 [numthreads(64, 1, 1)]
-void BuildActiveParticleList(uint3 id : SV_DispatchThreadID) {
+void BuildActiveList(uint3 id : SV_DispatchThreadID) {
     if (id.x >= max_particles) return;
     if (APIC_Particle_Buffer[id.x].mass > 0.0f) ActiveParticleList_Write.Append(id.x);
 }
 
 [numthreads(1, 1, 1)]
-void SetupParticleDispatchArgs(uint3 id : SV_DispatchThreadID) {
+void SetupDispatchArgs(uint3 id : SV_DispatchThreadID) {
     ParticleDispatchArgs[0] = (ParticleDispatchArgs[0] + 63) / 64; 
     ParticleDispatchArgs[1] = 1; ParticleDispatchArgs[2] = 1; 
 }
