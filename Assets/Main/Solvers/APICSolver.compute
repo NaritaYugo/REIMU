@@ -78,7 +78,7 @@ inline float3 GetAPICOrigin() {
     return float3(
         apic_world_offset.x,
         apic_world_offset.y,
-        apic_world_offset.z - (apic_grid_size.z * 0.5f) * dx_apic
+        apic_world_offset.z - (_ApicGridRes.z * 0.5f) * dx_apic
     );
 }
 
@@ -91,7 +91,7 @@ inline float3 QuadraticBSpline(float3 x) {
 }
 
 inline uint GetGridIndex(uint3 id) {
-    return id.z * (apic_grid_size.x * apic_grid_size.y) + id.y * apic_grid_size.x + id.x;
+    return id.z * (_ApicGridRes.x * _ApicGridRes.y) + id.y * _ApicGridRes.x + id.x;
 }
 
 inline float4 GetSWEBoundaryInfo(uint3 apic_id)
@@ -100,17 +100,17 @@ inline float4 GetSWEBoundaryInfo(uint3 apic_id)
     float2 cell_world_pos = apic_origin.xy + (float2(apic_id.x, apic_id.y) + 0.5f) * dx_apic;
     float2 swe_local_pos = cell_world_pos - swe_world_offset;
     
-    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)swe_grid_size.x - 1);
-    int swe_y = clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)swe_grid_size.y - 1);
+    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)_SweGridRes.x - 1);
+    int swe_y = clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)_SweGridRes.y - 1);
     
     float smoothed_h = 0.0f; float smoothed_hu = 0.0f; float smoothed_hv = 0.0f; float weight_sum = 0.0f;
     [unroll]
     for (int i = -1; i <= 1; i++) {
         [unroll]
         for (int j = -1; j <= 1; j++) {
-            int nx = clamp(swe_x + i, 0, (int)swe_grid_size.x - 1);
-            int ny = clamp(swe_y + j, 0, (int)swe_grid_size.y - 1);
-            SWECell n_swe = SWE_State_Read[ny * swe_grid_size.x + nx];
+            int nx = clamp(swe_x + i, 0, (int)_SweGridRes.x - 1);
+            int ny = clamp(swe_y + j, 0, (int)_SweGridRes.y - 1);
+            SWECell n_swe = SWE_State_Read[ny * _SweGridRes.x + nx];
             float w = (i == 0 && j == 0) ? 4.0f : ((abs(i) + abs(j) == 1) ? 2.0f : 1.0f);
             smoothed_h += n_swe.h * w; smoothed_hu += n_swe.hu * w; smoothed_hv += n_swe.hv * w; weight_sum += w;
         }
@@ -119,7 +119,7 @@ inline float4 GetSWEBoundaryInfo(uint3 apic_id)
 
     float z_bottom = apic_origin.z + apic_id.z * dx_apic;
 
-    int flipped_y = (int)swe_grid_size.y - 1 - swe_y;
+    int flipped_y = (int)_SweGridRes.y - 1 - swe_y;
     float b_c = TerrainHeightMap.Load(int3(swe_x, flipped_y, 0)).r;
     float fft_y = GetFFTSurfaceY(cell_world_pos);
     float swe_surface_y = b_c + smoothed_h + fft_y;
@@ -135,10 +135,10 @@ inline bool IsObstacle(uint3 id) {
     float3 apic_origin = GetAPICOrigin();
     float2 cell_world_pos = apic_origin.xy + (float2(id.x, id.y) + 0.5f) * dx_apic;
     float2 swe_local_pos = cell_world_pos - swe_world_offset;
-    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)swe_grid_size.x - 1);
-    int swe_y = clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)swe_grid_size.y - 1);
+    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)_SweGridRes.x - 1);
+    int swe_y = clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)_SweGridRes.y - 1);
     
-    int flipped_y = (int)swe_grid_size.y - 1 - swe_y;
+    int flipped_y = (int)_SweGridRes.y - 1 - swe_y;
     float b_c = TerrainHeightMap.Load(int3(swe_x, flipped_y, 0)).r;
     float z_bottom = apic_origin.z + id.z * dx_apic;
     
@@ -164,13 +164,13 @@ void AdvectParticles (uint3 id : SV_DispatchThreadID)
 
     float3 apic_origin = GetAPICOrigin();
     float3 min_bounds = apic_origin;
-    float3 max_bounds = apic_origin + float3(apic_grid_size.x, apic_grid_size.y, apic_grid_size.z) * dx_apic;
+    float3 max_bounds = apic_origin + float3(_ApicGridRes.x, _ApicGridRes.y, _ApicGridRes.z) * dx_apic;
 
     // 地形（Terrain）との衝突判定と摩擦
     float2 swe_local_pos = p.position.xy - swe_world_offset;
-    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)swe_grid_size.x - 1);
+    int swe_x = clamp((int)floor(swe_local_pos.x / dx_swe), 0, (int)_SweGridRes.x - 1);
 
-    int flipped_y = (int)swe_grid_size.y - 1 - clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)swe_grid_size.y - 1);
+    int flipped_y = (int)_SweGridRes.y - 1 - clamp((int)floor(swe_local_pos.y / dx_swe), 0, (int)_SweGridRes.y - 1);
     float b_c = TerrainHeightMap.Load(int3(swe_x, flipped_y, 0)).r;
 
     // パーティクルが地面より下に潜ったら、地面の上に押し上げて減速させる
@@ -218,9 +218,9 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID)
             [unroll]
             for (int k = -1; k <= 1; k++) {
                 int3 cell_idx = base_idx + int3(i, j, k);
-                int cx = clamp(cell_idx.x, 0, apic_grid_size.x - 1);
-                int cy = clamp(cell_idx.y, 0, apic_grid_size.y - 1);
-                int cz = clamp(cell_idx.z, 0, apic_grid_size.z - 1);
+                int cx = clamp(cell_idx.x, 0, _ApicGridRes.x - 1);
+                int cy = clamp(cell_idx.y, 0, _ApicGridRes.y - 1);
+                int cz = clamp(cell_idx.z, 0, _ApicGridRes.z - 1);
 
                 float3 d_pos = grid_pos - (float3)cell_idx;
                 float3 weight_vec = QuadraticBSpline(d_pos);
@@ -237,7 +237,7 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID)
                     // Momentum = mass * weight * (p.velocity + affine_v)
                     float3 momentum_contrib = mass_contrib * (p.velocity + affine_v);
                     
-                    uint flat_idx = cz * (apic_grid_size.x * apic_grid_size.y) + cy * apic_grid_size.x + cx;
+                    uint flat_idx = cz * (_ApicGridRes.x * _ApicGridRes.y) + cy * _ApicGridRes.x + cx;
 
                     int add_mass = (int)(mass_contrib * 10000.0f);
                     int add_velX = (int)(momentum_contrib.x * 10000.0f);
@@ -257,7 +257,7 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z) return;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
     uint idx = GetGridIndex(id);
     
     // 10000.0f で割り戻して float にする
@@ -286,7 +286,7 @@ void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void ComputeDivergence (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z|| IsObstacle(id)) return;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z|| IsObstacle(id)) return;
     uint idx = GetGridIndex(id);
 
     float4 center_info = GetSWEBoundaryInfo(id);
@@ -297,12 +297,12 @@ void ComputeDivergence (uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    float vR = (id.x < (uint)apic_grid_size.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) ? asfloat(APIC_Grid_VelX[idx + 1]) : 0.0f;
+    float vR = (id.x < (uint)_ApicGridRes.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) ? asfloat(APIC_Grid_VelX[idx + 1]) : 0.0f;
     float vL = (id.x > 0                          && !IsObstacle(id - uint3(1, 0, 0))) ? asfloat(APIC_Grid_VelX[idx - 1]) : 0.0f;
-    float vU = (id.y < (uint)apic_grid_size.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) ? asfloat(APIC_Grid_VelY[idx + apic_grid_size.x]) : 0.0f;
-    float vD = (id.y > 0                          && !IsObstacle(id - uint3(0, 1, 0))) ? asfloat(APIC_Grid_VelY[idx - apic_grid_size.x]) : 0.0f;
-    float vF = (id.z < (uint)apic_grid_size.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) ? asfloat(APIC_Grid_VelZ[idx + apic_grid_size.x * apic_grid_size.y]) : 0.0f;
-    float vB = (id.z > 0                          && !IsObstacle(id - uint3(0, 0, 1))) ? asfloat(APIC_Grid_VelZ[idx - apic_grid_size.x * apic_grid_size.y]) : 0.0f;
+    float vU = (id.y < (uint)_ApicGridRes.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) ? asfloat(APIC_Grid_VelY[idx + _ApicGridRes.x]) : 0.0f;
+    float vD = (id.y > 0                          && !IsObstacle(id - uint3(0, 1, 0))) ? asfloat(APIC_Grid_VelY[idx - _ApicGridRes.x]) : 0.0f;
+    float vF = (id.z < (uint)_ApicGridRes.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) ? asfloat(APIC_Grid_VelZ[idx + _ApicGridRes.x * _ApicGridRes.y]) : 0.0f;
+    float vB = (id.z > 0                          && !IsObstacle(id - uint3(0, 0, 1))) ? asfloat(APIC_Grid_VelZ[idx - _ApicGridRes.x * _ApicGridRes.y]) : 0.0f;
 
     // 中心差分による速度の発散 (Divergence)
     // div(u) = (v_right - v_left + v_up - v_down + v_front - v_back) / (2 * dx)
@@ -343,11 +343,11 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
             [unroll]
             for (int k = -1; k <= 1; k++) {
                 int3 cell_idx = base_idx + int3(i, j, k);
-                int cx = clamp(cell_idx.x, 0, apic_grid_size.x - 1);
-                int cy = clamp(cell_idx.y, 0, apic_grid_size.y - 1);
-                int cz = clamp(cell_idx.z, 0, apic_grid_size.z - 1);
+                int cx = clamp(cell_idx.x, 0, _ApicGridRes.x - 1);
+                int cy = clamp(cell_idx.y, 0, _ApicGridRes.y - 1);
+                int cz = clamp(cell_idx.z, 0, _ApicGridRes.z - 1);
 
-                uint flat_idx = cz * (apic_grid_size.x * apic_grid_size.y) + cy * apic_grid_size.x + cx;
+                uint flat_idx = cz * (_ApicGridRes.x * _ApicGridRes.y) + cy * _ApicGridRes.x + cx;
 
                 float3 corrected_vel = 0.0f;
                 float3 vel_star = float3(asfloat(APIC_Grid_VelX[flat_idx]), asfloat(APIC_Grid_VelY[flat_idx]), asfloat(APIC_Grid_VelZ[flat_idx]));
@@ -359,19 +359,19 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
                     float p_center_raw = APIC_Pressure_Write[flat_idx];
 
                     // 境界または地形（Obstacle）の場合は、圧力をミラーリングして勾配を0にする（ノイマン境界）
-                    bool obsR = (cx >= apic_grid_size.x - 1) || IsObstacle(cell_idx + int3(1, 0, 0));
+                    bool obsR = (cx >= _ApicGridRes.x - 1) || IsObstacle(cell_idx + int3(1, 0, 0));
                     bool obsL = (cx <= 0)                    || IsObstacle(cell_idx - int3(1, 0, 0));
-                    bool obsU = (cy >= apic_grid_size.y - 1) || IsObstacle(cell_idx + int3(0, 1, 0));
+                    bool obsU = (cy >= _ApicGridRes.y - 1) || IsObstacle(cell_idx + int3(0, 1, 0));
                     bool obsD = (cy <= 0)                    || IsObstacle(cell_idx - int3(0, 1, 0));
-                    bool obsF = (cz >= apic_grid_size.z - 1) || IsObstacle(cell_idx + int3(0, 0, 1));
+                    bool obsF = (cz >= _ApicGridRes.z - 1) || IsObstacle(cell_idx + int3(0, 0, 1));
                     bool obsB = (cz <= 0)                    || IsObstacle(cell_idx - int3(0, 0, 1));
 
                     float pR_raw = obsR ? p_center_raw : APIC_Pressure_Write[flat_idx + 1];
                     float pL_raw = obsL ? p_center_raw : APIC_Pressure_Write[flat_idx - 1];
-                    float pU_raw = obsU ? p_center_raw : APIC_Pressure_Write[flat_idx + apic_grid_size.x];
-                    float pD_raw = obsD ? p_center_raw : APIC_Pressure_Write[flat_idx - apic_grid_size.x];
-                    float pF_raw = obsF ? p_center_raw : APIC_Pressure_Write[flat_idx + apic_grid_size.x * apic_grid_size.y];
-                    float pB_raw = obsB ? p_center_raw : APIC_Pressure_Write[flat_idx - apic_grid_size.x * apic_grid_size.y];
+                    float pU_raw = obsU ? p_center_raw : APIC_Pressure_Write[flat_idx + _ApicGridRes.x];
+                    float pD_raw = obsD ? p_center_raw : APIC_Pressure_Write[flat_idx - _ApicGridRes.x];
+                    float pF_raw = obsF ? p_center_raw : APIC_Pressure_Write[flat_idx + _ApicGridRes.x * _ApicGridRes.y];
+                    float pB_raw = obsB ? p_center_raw : APIC_Pressure_Write[flat_idx - _ApicGridRes.x * _ApicGridRes.y];
 
                     float pR = max(0.0f, pR_raw); float pL = max(0.0f, pL_raw); 
                     float pU = max(0.0f, pU_raw); float pD = max(0.0f, pD_raw); 
@@ -404,9 +404,9 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
     }
 
     float margin = 0.5f; 
-    if (grid_pos.x < margin || grid_pos.x > apic_grid_size.x - 1.0f - margin ||
-        grid_pos.y < margin || grid_pos.y > apic_grid_size.y - 1.0f - margin ||
-        grid_pos.z < margin || grid_pos.z > apic_grid_size.z - 1.0f - margin)
+    if (grid_pos.x < margin || grid_pos.x > _ApicGridRes.x - 1.0f - margin ||
+        grid_pos.y < margin || grid_pos.y > _ApicGridRes.y - 1.0f - margin ||
+        grid_pos.z < margin || grid_pos.z > _ApicGridRes.z - 1.0f - margin)
     {
         new_c1 = 0.0f; new_c2 = 0.0f; new_c3 = 0.0f;
     }
@@ -419,7 +419,7 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void ClearAPICGrid (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z) return;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
     uint idx = GetGridIndex(id);
     APIC_Grid_Mass[idx] = 0; APIC_Grid_VelX[idx] = 0; APIC_Grid_VelY[idx] = 0; APIC_Grid_VelZ[idx] = 0;
     APIC_Divergence[idx] = 0.0f; APIC_Pressure_Write[idx] = 0.0f;
@@ -443,8 +443,8 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
     APICParticle p = APIC_Particle_Buffer[index];
     if (p.mass <= 0.0f) return;
 
-    int grid_w = swe_grid_size.x;
-    int grid_h = swe_grid_size.y;
+    int grid_w = _SweGridRes.x;
+    int grid_h = _SweGridRes.y;
     float2 swe_local_pos = p.position.xy - swe_world_offset;
     float2 swe_pos = swe_local_pos / dx_swe;
     int2 center_idx = (int2)floor(swe_pos);
@@ -455,7 +455,7 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
 
     uint flat_center = cy_center * grid_w + cx_center;
 
-    int flipped_y = (int)swe_grid_size.y - 1 - cy_center;
+    int flipped_y = (int)_SweGridRes.y - 1 - cy_center;
     float b_c = TerrainHeightMap.Load(int3(cx_center, flipped_y, 0)).r;
     float2 cell_world_pos = swe_world_offset + float2(cx_center, cy_center) * dx_swe;
     float fft_y = GetFFTSurfaceY(cell_world_pos);
@@ -537,8 +537,8 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
 [numthreads(8,8,8)]
 void BuildDiag(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z) return;
-    int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+    int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 自身が地形なら対角成分は0
     if (APIC_Grid_Mass[flatIdx] == 0 || IsObstacle(id)) { PCG_Precon[flatIdx] = 0.0f; return; }
@@ -546,11 +546,11 @@ void BuildDiag(uint3 id : SV_DispatchThreadID)
     float diag = 0;
     // 隣接セルが「地形ではない」場合のみカウントする
     if (id.x > 0 && !IsObstacle(id - uint3(1, 0, 0))) diag += 1.0f;
-    if (id.x < (uint)apic_grid_size.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) diag += 1.0f;
+    if (id.x < (uint)_ApicGridRes.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) diag += 1.0f;
     if (id.y > 0 && !IsObstacle(id - uint3(0, 1, 0))) diag += 1.0f;
-    if (id.y < (uint)apic_grid_size.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) diag += 1.0f;
+    if (id.y < (uint)_ApicGridRes.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) diag += 1.0f;
     if (id.z > 0 && !IsObstacle(id - uint3(0, 0, 1))) diag += 1.0f;
-    if (id.z < (uint)apic_grid_size.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) diag += 1.0f;
+    if (id.z < (uint)_ApicGridRes.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) diag += 1.0f;
 
     PCG_Precon[flatIdx] = (diag > 0) ? (1.0f / diag) : 0.0f;
 }
@@ -558,8 +558,8 @@ void BuildDiag(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 8)]
 void InitCG(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z) return;
-    int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+    int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 地形セルは完全にPCGから除外
     if (APIC_Grid_Mass[flatIdx] == 0 || IsObstacle(id)) { 
@@ -582,8 +582,8 @@ void DotProductPreconditioned(uint3 id : SV_DispatchThreadID, uint groupIndex : 
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
-    if (id.x < (uint)apic_grid_size.x && id.y < (uint)apic_grid_size.y && id.z < (uint)apic_grid_size.z) {
-        int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x < (uint)_ApicGridRes.x && id.y < (uint)_ApicGridRes.y && id.z < (uint)_ApicGridRes.z) {
+        int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
         
         // 質量があり、地形ではないセルのみ計算
         if (APIC_Grid_Mass[flatIdx] > 0 && !IsObstacle(id)) {
@@ -611,8 +611,8 @@ void DotProductGeneric(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_Grou
     shared_dot[groupIndex] = 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
-    if (id.x < (uint)apic_grid_size.x && id.y < (uint)apic_grid_size.y && id.z < (uint)apic_grid_size.z) {
-        int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x < (uint)_ApicGridRes.x && id.y < (uint)_ApicGridRes.y && id.z < (uint)_ApicGridRes.z) {
+        int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
         if (APIC_Grid_Mass[flatIdx] > 0 && !IsObstacle(id)) {
             shared_dot[groupIndex] = PCG_P[flatIdx] * PCG_Q[flatIdx];
         }
@@ -641,8 +641,8 @@ void ComputeInitialRTr(uint3 id : SV_DispatchThreadID) {
 [numthreads(8,8,8)]
 void ApplyA(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z) return;
-    int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z) return;
+    int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     
     // 自身が地形なら結果は0
     if (APIC_Grid_Mass[flatIdx] == 0 || IsObstacle(id)) { PCG_Q[flatIdx] = 0; return; }
@@ -657,24 +657,24 @@ void ApplyA(uint3 id : SV_DispatchThreadID)
         if (APIC_Grid_Mass[flatIdx - 1] > 0) result += (center - PCG_P[flatIdx - 1]);
         else result += center; // 空気セル境界
     }
-    if (id.x < (uint)apic_grid_size.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) {
+    if (id.x < (uint)_ApicGridRes.x - 1 && !IsObstacle(id + uint3(1, 0, 0))) {
         if (APIC_Grid_Mass[flatIdx + 1] > 0) result += (center - PCG_P[flatIdx + 1]);
         else result += center;
     }
     if (id.y > 0 && !IsObstacle(id - uint3(0, 1, 0))) {
-        if (APIC_Grid_Mass[flatIdx - apic_grid_size.x] > 0) result += (center - PCG_P[flatIdx - apic_grid_size.x]); 
+        if (APIC_Grid_Mass[flatIdx - _ApicGridRes.x] > 0) result += (center - PCG_P[flatIdx - _ApicGridRes.x]); 
         else result += center; 
     }
-    if (id.y < (uint)apic_grid_size.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) {
-        if (APIC_Grid_Mass[flatIdx + apic_grid_size.x] > 0) result += (center - PCG_P[flatIdx + apic_grid_size.x]); 
+    if (id.y < (uint)_ApicGridRes.y - 1 && !IsObstacle(id + uint3(0, 1, 0))) {
+        if (APIC_Grid_Mass[flatIdx + _ApicGridRes.x] > 0) result += (center - PCG_P[flatIdx + _ApicGridRes.x]); 
         else result += center; 
     }
     if (id.z > 0 && !IsObstacle(id - uint3(0, 0, 1))) { 
-        if (APIC_Grid_Mass[flatIdx - apic_grid_size.x * apic_grid_size.y] > 0) result += (center - PCG_P[flatIdx - apic_grid_size.x * apic_grid_size.y]); 
+        if (APIC_Grid_Mass[flatIdx - _ApicGridRes.x * _ApicGridRes.y] > 0) result += (center - PCG_P[flatIdx - _ApicGridRes.x * _ApicGridRes.y]); 
         else result += center; 
     }
-    if (id.z < (uint)apic_grid_size.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) { 
-        if (APIC_Grid_Mass[flatIdx + apic_grid_size.x * apic_grid_size.y] > 0) result += (center - PCG_P[flatIdx + apic_grid_size.x * apic_grid_size.y]); 
+    if (id.z < (uint)_ApicGridRes.z - 1 && !IsObstacle(id + uint3(0, 0, 1))) { 
+        if (APIC_Grid_Mass[flatIdx + _ApicGridRes.x * _ApicGridRes.y] > 0) result += (center - PCG_P[flatIdx + _ApicGridRes.x * _ApicGridRes.y]); 
         else result += center; 
     }
     PCG_Q[flatIdx] = result;
@@ -690,8 +690,8 @@ void CalculateAlpha(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 8)]
 void UpdatePR(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z|| IsObstacle(id)) return;
-    int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z|| IsObstacle(id)) return;
+    int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     if (APIC_Grid_Mass[flatIdx] == 0) return;
     float alpha = PCG_Scalars[2];
     APIC_Pressure_Write[flatIdx] += alpha * PCG_P[flatIdx];
@@ -709,8 +709,8 @@ void CalculateBeta(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 8)]
 void UpdateD(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= (uint)apic_grid_size.x || id.y >= (uint)apic_grid_size.y || id.z >= (uint)apic_grid_size.z|| IsObstacle(id)) return;
-    int flatIdx = id.x + id.y * apic_grid_size.x + id.z * apic_grid_size.x * apic_grid_size.y;
+    if (id.x >= (uint)_ApicGridRes.x || id.y >= (uint)_ApicGridRes.y || id.z >= (uint)_ApicGridRes.z|| IsObstacle(id)) return;
+    int flatIdx = id.x + id.y * _ApicGridRes.x + id.z * _ApicGridRes.x * _ApicGridRes.y;
     if (APIC_Grid_Mass[flatIdx] == 0) return;
     PCG_P[flatIdx] = PCG_R[flatIdx] * PCG_Precon[flatIdx] + PCG_Scalars[3] * PCG_P[flatIdx];
 }

@@ -4,18 +4,12 @@ using FluidSimulation;
 
 public partial class SimulationManager : MonoBehaviour
 {
-    [Header("Simulation Settings")]
+    [Header("Simulation Size")]
     [SerializeField] private Vector3Int m_DomainLength = new(64, 64, 64);
     [SerializeField] private int m_SweCellsPerMeter = 2;
     [SerializeField] private int m_ApicCellsPerMeter = 1;
-
-    private float dxSwe, dxApic;
-    private Vector2Int sweGridRes;
-    private Vector3Int apicGridRes;
-
-    private int M_ratio;
-    public int maxParticles = 1000000;
-    public int pcgIterations = 8;
+    [SerializeField] private int maxParticles = 1000000;
+    [SerializeField] private int pcgIterations = 8;
 
     [Header("Fluid Settings")]
     public float baseMass = 0.5f;
@@ -56,6 +50,11 @@ public partial class SimulationManager : MonoBehaviour
     public Transform trackTarget;
     public Vector2 sweWorldOffset = Vector2.zero; 
     public Vector3 apicWorldOffset = Vector3.zero;
+
+    private float dxSwe, dxApic;
+    private Vector2Int sweGridRes;
+    private Vector3Int apicGridRes;
+    private int M_ratio;
 
     [Header("Compute Buffers (APIC/SWE用)")]
     // アトミック加算の競合によるGPUフリーズを防ぐため、
@@ -182,8 +181,8 @@ public partial class SimulationManager : MonoBehaviour
         ComputeShader[] shaders = { sweCS, apicCS };
         foreach (var cs in shaders)
         {
-            cs.SetInts("swe_grid_size", new int[] { sweGridRes.x, sweGridRes.y });
-            cs.SetInts("apic_grid_size", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
+            cs.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
+            cs.SetInts("_ApicGridRes", new int[] { apicGridRes.x, apicGridRes.z, apicGridRes.y });
             cs.SetFloat("dx_swe", dxSwe);
             cs.SetFloat("dx_apic", dxApic);
             cs.SetInt("M_ratio", M_ratio);  
@@ -209,7 +208,7 @@ public partial class SimulationManager : MonoBehaviour
         float expected_max_velocity = 15.0f; 
         
         // 波の速度がセルを飛び越えない安全なSWEの最大タイムステップを算出
-        float dt_swe_max = (0.20f * dxSwe) / (expected_wave_speed + expected_max_velocity); 
+        float dt_swe_max = 0.20f * dxSwe / (expected_wave_speed + expected_max_velocity); 
         int subSteps = Mathf.CeilToInt(dt_apic / dt_swe_max);
         float dt_swe = dt_apic / subSteps;
 

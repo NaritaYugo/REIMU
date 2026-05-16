@@ -31,8 +31,8 @@ static const float H_MIN = 0.001f;
 // ==========================================
 // 共通のシミュレーション変数
 // ==========================================
-float2 swe_grid_size;    // SWEのグリッド解像度
-float3 apic_grid_size;   // APICの3Dグリッド解像度
+float2 _SweGridRes;    // SWEのグリッド解像度
+float3 _ApicGridRes;   // APICの3Dグリッド解像度
 float dx_swe;            // SWEのセル幅
 float dx_apic;           // APICのセル幅
 int M_ratio;             // 解像度比 (M = dx_apic / dx_swe)

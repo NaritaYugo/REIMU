@@ -52,8 +52,8 @@ SamplerState sampler_LinearRepeat
 
 float GetBedElevation(int ix, int iy)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y;
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y;
     ix = clamp(ix, 0, grid_w - 1);
     iy = clamp(iy, 0, grid_h - 1);
     
@@ -88,8 +88,8 @@ float3 GetFFTState(float2 worldPos, float bed_elevation)
 
 float3 GetSWEState(int cx, int cy)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y;
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y;
     
     if (cx < 0 || cx >= grid_w || cy < 0 || cy >= grid_h) 
     {
@@ -105,36 +105,29 @@ float3 GetSWEState(int cx, int cy)
 
 inline float random(float2 uv) { return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f); }
 
-// MinModリミッター (TVDスキーム用)
-// 勾配(slope)が急激に変化する（符号が反転する等）場所で勾配をゼロに制限し、
-// 波の不自然な振動（数値振動）を防ぐ。
-// minmod(a, b) = 0.5 * (sgn(a) + sgn(b)) * min(|a|, |b|)
-inline float MinMod(float a, float b)
-{
+// MinModリミッター
+inline float MinMod(float a, float b) {
     float sign_a = sign(a);
     float sign_b = sign(b);
     float min_abs = min(abs(a), abs(b));
     return 0.5f * (sign_a + sign_b) * min_abs;
 }
 
-inline float2 MinMod(float2 a, float2 b)
-{
+inline float2 MinMod(float2 a, float2 b) {
     float2 sign_a = sign(a);
     float2 sign_b = sign(b);
     float2 min_abs = min(abs(a), abs(b));
     return 0.5f * (sign_a + sign_b) * min_abs;
 }
 
-inline float3 MinMod(float3 a, float3 b)
-{
+inline float3 MinMod(float3 a, float3 b) {
     float3 sign_a = sign(a);
     float3 sign_b = sign(b);
     float3 min_abs = min(abs(a), abs(b));
     return 0.5f * (sign_a + sign_b) * min_abs;
 }
 
-inline float2 GetVelocity(float h, float hu, float hv)
-{
+inline float2 GetVelocity(float h, float hu, float hv) {
     if (h < H_MIN) return float2(0.0f, 0.0f);
     
     float h2 = h * h;
@@ -142,21 +135,18 @@ inline float2 GetVelocity(float h, float hu, float hv)
     return float2((2.0f * h * hu) / den, (2.0f * h * hv) / den);
 }
 
-// X方向の物理流束 (Physical Flux) の計算
-// F(U) = [ hu,  h*u^2 + 0.5*g*h^2,  h*u*v ]
+// フラックス
 inline float3 ComputeFluxX(float h, float u, float v) { 
     float q = h * u; 
     return float3(q, q * u + 0.5f * G * h * h, q * v); 
 }
-// Y方向の物理流束の計算
+
 inline float3 ComputeFluxY(float h, float u, float v) { 
     float q = h * v; 
     return float3(q, q * u, q * v + 0.5f * G * h * h); 
 }
 
-// HLL近似リーマンソルバ (Harten-Lax-van Leer)
-// セル間の境界において、左右の状態(UL, UR)から不連続な波の伝播速度(sL, sR)を予測し、
-// 安定した流束(Flux)を計算するスキーム。
+// HLL近似リーマンソルバ
 inline float3 HLL_FluxX(float3 UL, float3 UR)
 {
     float2 vL = GetVelocity(UL.x, UL.y, UL.z);
@@ -225,8 +215,8 @@ inline float3 HLL_FluxY(float3 UB, float3 UT)
 [numthreads(8, 8, 1)]
 void InitSWE(uint3 id : SV_DispatchThreadID)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y;
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y;
     if (id.x >= (uint)grid_w || id.y >= (uint)grid_h) return;
 
     uint index = id.y * grid_w + id.x;
@@ -250,8 +240,8 @@ void InitSWE(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void UpdateSWE (uint3 id : SV_DispatchThreadID)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y; 
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y; 
     int ix = (int)id.x;
     int iy = (int)id.y;
     if (ix >= grid_w || iy >= grid_h) return;
@@ -567,11 +557,11 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y;
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
     int iy = (int)id.y;
-    if (ix >= grid_w || iy >= (int)swe_grid_size.y) return;
+    if (ix >= grid_w || iy >= (int)_SweGridRes.y) return;
 
     uint index = iy * grid_w + ix;
     SWECell current = SWE_State_Read[index];
@@ -726,8 +716,8 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ApplyCondensation (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)swe_grid_size.x || id.y >= (uint)swe_grid_size.y) return;
-    uint index = id.y * swe_grid_size.x + id.x;
+    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
+    uint index = id.y * _SweGridRes.x + id.x;
 
     SWECell current = SWE_State_Read[index];
     
@@ -743,9 +733,9 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void InteractSWE (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)swe_grid_size.x || id.y >= (uint)swe_grid_size.y) return;
+    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
 
-    uint index = id.y * swe_grid_size.x + id.x;
+    uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = SWE_State_Read[index];
 
     if (mouse_active == 1)
@@ -766,8 +756,8 @@ void InteractSWE (uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ShiftSWEGrid(uint3 id : SV_DispatchThreadID)
 {
-    int grid_w = (int)swe_grid_size.x;
-    int grid_h = (int)swe_grid_size.y;
+    int grid_w = (int)_SweGridRes.x;
+    int grid_h = (int)_SweGridRes.y;
     int ix = (int)id.x;
     int iy = (int)id.y;
     if (ix >= grid_w || iy >= grid_h) return;
@@ -796,11 +786,11 @@ void ShiftSWEGrid(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 8, 1)]
 void ClearIntermediateBuffers (uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= (uint)swe_grid_size.x || id.y >= (uint)swe_grid_size.y) return;
+    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
     
-    uint index = id.y * swe_grid_size.x + id.x;
+    uint index = id.y * _SweGridRes.x + id.x;
     
-    // 中間バッファを 0.0f で初期化 (asuint(0.0f) は 0)
+    // 中間バッファを 0 で初期化
     Delta_H_Buffer[index] = 0;
     Delta_HU_Buffer[index] = 0;
     Delta_HV_Buffer[index] = 0;
