@@ -55,6 +55,10 @@ public partial class SimulationManager : MonoBehaviour
         // 計算負荷削減のための、生存粒子リストと間接ディスパッチ(DispatchIndirect)用バッファ
         public ComputeBuffer activeParticleList, activeParticleCount, particleDispatchArgs;
 
+        // ボクセル化
+        public ComputeBuffer voxelGrid, voxelMomX, voxelMomY, voxelMomZ, 
+            triangle, drawArgs, triTable, edgeTable, voxelBlurA, voxelBlurB, voxelFinalDensity;
+
         public void ReleaseAll()
         {
             FieldInfo[] fields = this.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
@@ -77,38 +81,29 @@ public partial class SimulationManager : MonoBehaviour
     [SerializeField] private int pcgIterations = 8;
 
     [Header("Fluid Settings")]
-    public float baseMass = 0.5f;
-    public float seaBottomHeight = -3f; //浅水近似のための仮の水深
+    [SerializeField] private float baseMass = 0.5f;
+    [SerializeField] private float seaBottomHeight = -3f; //浅水近似のための仮の水深
 
-    [Header("Sublimation & Condensation")]
-    [Tooltip("APIC化(昇華)が発生するフルード数(流れの慣性力と重力の比)の閾値")]
-    public float frThreshold = 1.0f; 
-    [Tooltip("APIC化が発生する水面の勾配(波の急峻さ)の閾値")]
-    public float gradThreshold = 1.5f; 
-    [Tooltip("APIC化が発生する水面のラプラシアン(波の尖り具合)の閾値。負の値")]
-    public float laplacianThreshold = -2.5f; 
+    [Header("Sublimation")]
+    [SerializeField] private float m_ToApicFroudeTH = 1.0f; 
+    [SerializeField] private float m_ToApicGradTH = 1.5f; 
+    [SerializeField] private float m_ToApicLaplacianTH = -2.5f; 
     
-    [Tooltip("昇華条件を満たした際、1秒間にSWEの何割をAPIC粒子に変換するかの減衰係数。大きいほど一瞬で水柱が粒子化する")]
-    public float conversionRateMultiplier = 20.0f;
-    [Tooltip("昇華時にAPIC粒子へ与えられる鉛直方向(Z軸)の初速度の倍率")]
-    public float pushZMultiplier = 1.0f; 
-    [Tooltip("昇華時に追加されるランダムな飛沫の初速度の倍率")]
-    public float splashVelocityMultiplier = 1.0f;
-    
-    [Range(0f, 1f), Tooltip("凝縮時(落下時)の衝撃を、SWEの水平方向の波紋にどれくらい変換するか")]
-    public float horizontalMomentumTransfer = 0.3f;
-    [Range(0f, 1f), Tooltip("凝縮時の鉛直方向の運動量をどれくらい波のエネルギーとして扱うか")]
-    public float verticalMomentumToWave = 0.1f;
+    [SerializeField] private float m_SublimatePerSecond = 20.0f;
+    [SerializeField] private float m_SublimateVerticalMulti = 1.0f; 
+    [SerializeField] private float m_SublimateSplashMulti = 1.0f;
+
+    [Header("Condensation")]
+    [SerializeField] private float m_ToSweHorizontalTransfer = 0.3f;
+    [SerializeField] private float m_ToSweVerticalMomTransfer = 0.1f;
 
     [Header("Mouse Interaction")]
-    public float mouseRadius = 3.0f;
-    public float mouseForce = 3.0f;
-    private Vector3 prevMousePos;
-    private bool wasMouseDown = false;
+    [SerializeField] private float mouseRadius = 3.0f;
+    [SerializeField] private float mouseForce = 3.0f;
 
     [Header("Compute Shaders")]
-    public ComputeShader sweCS;
-    public ComputeShader apicCS;
+    [SerializeField] private ComputeShader sweCS;
+    [SerializeField] private ComputeShader apicCS;
 
     [Header("Tracking")]
     public FFTManager fftOcean;
@@ -120,6 +115,9 @@ public partial class SimulationManager : MonoBehaviour
     private Vector2Int sweGridRes;
     private Vector3Int apicGridRes;
     private int M_ratio;
+
+    private Vector3 prevMousePos;
+    private bool wasMouseDown = false;
     
     private readonly ApicKernels apicKernels = new();
     private readonly SweKernels sweKernels = new();
@@ -344,8 +342,8 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.Condense, "Delta_HU_Buffer", buffers.deltaHU);
         apicCS.SetBuffer(apicKernels.Condense, "Delta_HV_Buffer", buffers.deltaHV);
         apicCS.SetBuffer(apicKernels.Condense, "APIC_Particle_Buffer", buffers.apicParticle);
-        apicCS.SetFloat("horizontal_momentum_transfer", horizontalMomentumTransfer);
-        apicCS.SetFloat("vertical_momentum_to_wave", verticalMomentumToWave);
+        apicCS.SetFloat("horizontal_momentum_transfer", m_ToSweHorizontalTransfer);
+        apicCS.SetFloat("vertical_momentum_to_wave", m_ToSweVerticalMomTransfer);
         apicCS.DispatchIndirect(apicKernels.Condense, buffers.particleDispatchArgs);
 
         // =========================================================
@@ -393,12 +391,12 @@ public partial class SimulationManager : MonoBehaviour
         // Step 7: SWE → APIC 昇華 (Sublimation)
         // 波が激しくなった領域のSWEの体積を削り、APIC粒子をスポーンさせる
         // =========================================================
-        sweCS.SetFloat("fr_threshold", frThreshold);
-        sweCS.SetFloat("grad_threshold", gradThreshold);
-        sweCS.SetFloat("laplacian_threshold", laplacianThreshold);
-        sweCS.SetFloat("conversion_rate_multiplier", conversionRateMultiplier);
-        sweCS.SetFloat("push_z_multiplier", pushZMultiplier);
-        sweCS.SetFloat("splash_velocity_multiplier", splashVelocityMultiplier);
+        sweCS.SetFloat("fr_threshold", m_ToApicFroudeTH);
+        sweCS.SetFloat("grad_threshold", m_ToApicGradTH);
+        sweCS.SetFloat("laplacian_threshold", m_ToApicLaplacianTH);
+        sweCS.SetFloat("conversion_rate_multiplier", m_SublimatePerSecond);
+        sweCS.SetFloat("push_z_multiplier", m_SublimateVerticalMulti);
+        sweCS.SetFloat("splash_velocity_multiplier", m_SublimateSplashMulti);
         sweCS.SetInt("max_particles", maxParticles);
         sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Read", buffers.sweStateRead);
         sweCS.SetBuffer(sweKernels.Sublimate, "SWE_State_Write", buffers.sweStateWrite);
