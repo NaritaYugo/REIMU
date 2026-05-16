@@ -48,6 +48,13 @@ SamplerState sampler_LinearRepeat {
 // ==========================================
 // ヘルパー関数
 // ==========================================
+inline float random(float2 uv) { return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f); }
+
+// MinModリミッター
+inline float  MinMod(float  a, float  b) {return 0.5f * (sign(a) + sign(b)) * min(abs(a), abs(b));}
+inline float2 MinMod(float2 a, float2 b) {return 0.5f * (sign(a) + sign(b)) * min(abs(a), abs(b));}
+inline float3 MinMod(float3 a, float3 b) {return 0.5f * (sign(a) + sign(b)) * min(abs(a), abs(b));}
+
 float GetBedElevation(int ix, int iy) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
@@ -97,30 +104,6 @@ float3 GetSWEState(int cx, int cy) {
     return float3(cell.h, cell.hu, cell.hv);
 }
 
-inline float random(float2 uv) { return frac(sin(dot(uv, float2(12.9898f, 78.233f))) * 43758.5453f); }
-
-// MinModリミッター
-inline float MinMod(float a, float b) {
-    float sign_a = sign(a);
-    float sign_b = sign(b);
-    float min_abs = min(abs(a), abs(b));
-    return 0.5f * (sign_a + sign_b) * min_abs;
-}
-
-inline float2 MinMod(float2 a, float2 b) {
-    float2 sign_a = sign(a);
-    float2 sign_b = sign(b);
-    float2 min_abs = min(abs(a), abs(b));
-    return 0.5f * (sign_a + sign_b) * min_abs;
-}
-
-inline float3 MinMod(float3 a, float3 b) {
-    float3 sign_a = sign(a);
-    float3 sign_b = sign(b);
-    float3 min_abs = min(abs(a), abs(b));
-    return 0.5f * (sign_a + sign_b) * min_abs;
-}
-
 inline float2 GetVelocity(float h, float hu, float hv) {
     if (h < H_MIN) return float2(0.0f, 0.0f);
     
@@ -130,18 +113,13 @@ inline float2 GetVelocity(float h, float hu, float hv) {
 }
 
 // フラックス
-inline float3 ComputeFluxX(float h, float u, float v) { 
+inline float3 ComputeFlux(float h, float u, float v) { 
     float q = h * u; 
     return float3(q, q * u + 0.5f * G * h * h, q * v); 
 }
 
-inline float3 ComputeFluxY(float h, float u, float v) { 
-    float q = h * v; 
-    return float3(q, q * u, q * v + 0.5f * G * h * h); 
-}
-
 // HLL近似リーマンソルバ
-inline float3 HLL_FluxX(float3 UL, float3 UR) {
+inline float3 HLL_Flux(float3 UL, float3 UR) {
     float2 vL = GetVelocity(UL.x, UL.y, UL.z);
     float2 vR = GetVelocity(UR.x, UR.y, UR.z);
     
@@ -164,8 +142,8 @@ inline float3 HLL_FluxX(float3 UL, float3 UR) {
         sR = max(vL.x + cL, vR.x + cR);
     }
 
-    float3 FL = ComputeFluxX(UL.x, vL.x, vL.y);
-    float3 FR = ComputeFluxX(UR.x, vR.x, vR.y);
+    float3 FL = ComputeFlux(UL.x, vL.x, vL.y);
+    float3 FR = ComputeFlux(UR.x, vR.x, vR.y);
 
     // HLLフラックスの評価式
     // 波が左に逃げるならFL、右ならFR、挟まれていれば中間状態を計算
@@ -175,33 +153,76 @@ inline float3 HLL_FluxX(float3 UL, float3 UR) {
     else return float3(0.0f, 0.0f, 0.0f);
 }
 
-inline float3 HLL_FluxY(float3 UB, float3 UT) {
-    float2 vB = GetVelocity(UB.x, UB.y, UB.z);
-    float2 vT = GetVelocity(UT.x, UT.y, UT.z);
-    float cB = sqrt(G * max(0.0f, UB.x));
-    float cT = sqrt(G * max(0.0f, UT.x));
-    float sL, sR;
+// 1次元軸方向のフラックスとソースタームを計算する汎用関数
+inline void ComputeAxisFlux(
+    float3 U_M2, float3 U_M1, float3 U_0, float3 U_P1, float3 U_P2, 
+    float B_M1, float B_0, float B_P1,
+    out float3 flux_pos, out float3 flux_neg, out float source_term
+) {
+    float2 V_M2 = GetVelocity(U_M2.x, U_M2.y, U_M2.z);
+    float2 V_M1 = GetVelocity(U_M1.x, U_M1.y, U_M1.z);
+    float2 V_0  = GetVelocity(U_0.x,  U_0.y,  U_0.z);
+    float2 V_P1 = GetVelocity(U_P1.x, U_P1.y, U_P1.z);
+    float2 V_P2 = GetVelocity(U_P2.x, U_P2.y, U_P2.z);
 
-    if (UB.x <= H_MIN && UT.x <= H_MIN) {
-        sL = 0.0f; sR = 0.0f;
-    } else if (UB.x <= H_MIN) {
-        sL = vT.y - 2.0f * cT;
-        sR = vT.y + cT;
-    } else if (UT.x <= H_MIN) {
-        sL = vB.y - cB;
-        sR = vB.y + 2.0f * cB;
-    } else {
-        sL = min(vB.y - cB, vT.y - cT);
-        sR = max(vB.y + cB, vT.y + cT);
+    // 勾配計算 (MinMod)
+    float slopeH_M1 = MinMod(U_M1.x - U_M2.x, U_0.x  - U_M1.x);
+    float slopeH_0  = MinMod(U_0.x  - U_M1.x, U_P1.x - U_0.x);
+    float slopeH_P1 = MinMod(U_P1.x - U_0.x,  U_P2.x - U_P1.x);
+
+    float2 slopeV_M1 = MinMod(V_M1 - V_M2, V_0  - V_M1);
+    float2 slopeV_0  = MinMod(V_0  - V_M1, V_P1 - V_0);
+    float2 slopeV_P1 = MinMod(V_P1 - V_0,  V_P2 - V_P1);
+
+    // 水深が浅い場合の勾配制限
+    if (U_0.x < 0.01f) {
+        slopeH_0 = 0.0f;
+        slopeV_0 = float2(0.0f, 0.0f);
+    } else if (U_M1.x < 0.01f || U_P1.x < 0.01f) {
+        slopeV_0 = float2(0.0f, 0.0f);
     }
 
-    float3 FB = ComputeFluxY(UB.x, vB.x, vB.y);
-    float3 FT = ComputeFluxY(UT.x, vT.x, vT.y);
+    // セル境界の Eta
+    float Eta_pos_L = U_0.x  + 0.5f * slopeH_0  + B_0;
+    float Eta_pos_R = U_P1.x - 0.5f * slopeH_P1 + B_P1;
+    float Eta_neg_L = U_M1.x + 0.5f * slopeH_M1 + B_M1;
+    float Eta_neg_R = U_0.x  - 0.5f * slopeH_0  + B_0;
 
-    if (sL >= 0.0f) return FB;
-    else if (sR <= 0.0f) return FT;
-    else if (sR > sL) return (sR * FB - sL * FT + sL * sR * (UT - UB)) / (sR - sL);
-    else return float3(0.0f, 0.0f, 0.0f);
+    // 地形高の最大値 (静水圧再構築)
+    float B_pos = max(B_0, B_P1);
+    float B_neg = max(B_M1, B_0);
+
+    // 再構築された水深 h と流速 V
+    float h_pos_L = max(0.0f, Eta_pos_L - B_pos);
+    float h_pos_R = max(0.0f, Eta_pos_R - B_pos);
+    float h_neg_L = max(0.0f, Eta_neg_L - B_neg);
+    float h_neg_R = max(0.0f, Eta_neg_R - B_neg);
+
+    float2 V_pos_L = V_0  + 0.5f * slopeV_0;
+    float2 V_pos_R = V_P1 - 0.5f * slopeV_P1;
+    float2 V_neg_L = V_M1 + 0.5f * slopeV_M1;
+    float2 V_neg_R = V_0  - 0.5f * slopeV_0;
+
+    // フラックス計算 (HLL_Fluxのみを使用)
+    flux_pos = HLL_Flux(float3(h_pos_L, h_pos_L * V_pos_L), float3(h_pos_R, h_pos_R * V_pos_R));
+    flux_neg = HLL_Flux(float3(h_neg_L, h_neg_L * V_neg_L), float3(h_neg_R, h_neg_R * V_neg_R));
+
+    // 地形の壁判定 (フラックス遮断)
+    float Eta_M1 = U_M1.x + B_M1;
+    float Eta_0  = U_0.x  + B_0;
+    float Eta_P1 = U_P1.x + B_P1;
+
+    if (flux_pos.x > 0.0f && Eta_0 <= B_P1) flux_pos = float3(0.0f, 0.0f, 0.0f);
+    if (flux_pos.x < 0.0f && Eta_P1 <= B_0) flux_pos = float3(0.0f, 0.0f, 0.0f);
+    if (flux_neg.x > 0.0f && Eta_M1 <= B_0) flux_neg = float3(0.0f, 0.0f, 0.0f);
+    if (flux_neg.x < 0.0f && Eta_0 <= B_M1) flux_neg = float3(0.0f, 0.0f, 0.0f);
+
+    // 重力ソースターム
+    float h_0_pos = max(0.0f, Eta_pos_L - B_0);
+    float h_0_neg = max(0.0f, Eta_neg_R - B_0);
+    
+    source_term = 0.5f * G * (h_pos_L * h_pos_L - h_neg_R * h_neg_R)
+                - 0.5f * G * (h_0_pos * h_0_pos - h_0_neg * h_0_neg);
 }
 
 // ==========================================
@@ -237,235 +258,62 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     if (ix >= grid_w || iy >= grid_h) return;
 
     uint index = iy * grid_w + ix;
-    float2 cell_world_pos = swe_world_offset + float2(ix, iy) * _dxSwe;
     SWECell current = SWE_State_Read[index];
-    float B_C = GetBedElevation(ix, iy); // 中心セルの地形高を1回だけ取る
+    float3 U_C = float3(current.h, current.hu, current.hv);
+    float B_C = GetBedElevation(ix, iy);
 
-    // 各セルのワールド座標と地形高を渡し、極力テクスチャフェッチをさせない
-    float3 U_LL = GetSWEState(ix - 2, iy);
-    float3 U_L  = GetSWEState(ix - 1, iy);
-    float3 U_C  = float3(current.h, current.hu, current.hv);
-    float3 U_R  = GetSWEState(ix + 1, iy);
-    float3 U_RR = GetSWEState(ix + 2, iy);
+    // 1段隣のセル状態を取得
+    float3 U_L = GetSWEState(ix - 1, iy);
+    float3 U_R = GetSWEState(ix + 1, iy);
+    float3 U_B = GetSWEState(ix, iy - 1);
+    float3 U_T = GetSWEState(ix, iy + 1);
 
-    float3 U_BB = GetSWEState(ix, iy - 2);
-    float3 U_B  = GetSWEState(ix, iy - 1);
-    float3 U_T  = GetSWEState(ix, iy + 1);
-    float3 U_TT = GetSWEState(ix, iy + 2);
-
-    // ==========================================================
-    // 1. 各セルの絶対水面高 (Eta) を計算
-    // 水深(h)ではなく、海抜に相当する絶対水面高(Eta = h + B)で勾配を計算する
-    // これにより静水状態で波が発生しないようにする。
-    // ==========================================================
     float B_L = GetBedElevation(ix - 1, iy);
     float B_R = GetBedElevation(ix + 1, iy);
     float B_B = GetBedElevation(ix, iy - 1);
     float B_T = GetBedElevation(ix, iy + 1);
 
-    float Eta_C = U_C.x + B_C;
-
-    // X方向の Eta
-    float Eta_LL = U_LL.x + GetBedElevation(ix - 2, iy);
-    float Eta_L  = U_L.x  + B_L;
-    float Eta_R  = U_R.x  + B_R;
-    float Eta_RR = U_RR.x + GetBedElevation(ix + 2, iy);
-
-    // Y方向の Eta
-    float Eta_BB = U_BB.x + GetBedElevation(ix, iy - 2);
-    float Eta_B  = U_B.x  + B_B;
-    float Eta_T  = U_T.x  + B_T;
-    float Eta_TT = U_TT.x + GetBedElevation(ix, iy + 2);
-
-    // ==========================================================
-    // 2. Eta と 流速(V) の傾きを計算 (MUSCL スキーム)
-    // 空間2次精度を達成するため、セル内の値が一様ではなく傾きを持っていると仮定する。
-    // 波の尖りを保つため、MinModリミッターで極値をカットする。
-    // ==========================================================
-    float2 V_LL = GetVelocity(U_LL.x, U_LL.y, U_LL.z);
-    float2 V_L  = GetVelocity(U_L.x,  U_L.y,  U_L.z);
-    float2 V_C  = GetVelocity(U_C.x,  U_C.y,  U_C.z);
-    float2 V_R  = GetVelocity(U_R.x,  U_R.y,  U_R.z);
-    float2 V_RR = GetVelocity(U_RR.x, U_RR.y, U_RR.z);
-
-    float2 V_BB = GetVelocity(U_BB.x, U_BB.y, U_BB.z);
-    float2 V_B  = GetVelocity(U_B.x,  U_B.y,  U_B.z);
-    float2 V_T  = GetVelocity(U_T.x,  U_T.y,  U_T.z);
-    float2 V_TT = GetVelocity(U_TT.x, U_TT.y, U_TT.z);
-
-    float slopeHX_L = MinMod(U_L.x - U_LL.x, U_C.x - U_L.x);
-    float slopeHX_C = MinMod(U_C.x - U_L.x,  U_R.x - U_C.x);
-    float slopeHX_R = MinMod(U_R.x - U_C.x,  U_RR.x - U_R.x);
-
-    float slopeHY_B = MinMod(U_B.x - U_BB.x, U_C.x - U_B.x);
-    float slopeHY_C = MinMod(U_C.x - U_B.x,  U_T.x - U_C.x);
-    float slopeHY_T = MinMod(U_T.x - U_C.x,  U_TT.x - U_T.x);
-
-    float2 slopeVX_L = MinMod(V_L - V_LL, V_C - V_L);
-    float2 slopeVX_C = MinMod(V_C - V_L,  V_R - V_C);
-    float2 slopeVX_R = MinMod(V_R - V_C,  V_RR - V_R);
-
-    float2 slopeVY_B = MinMod(V_B - V_BB, V_C - V_B);
-    float2 slopeVY_C = MinMod(V_C - V_B,  V_T - V_C);
-    float2 slopeVY_T = MinMod(V_T - V_C,  V_TT - V_T);
-
-    // 水深が極端に浅い場合（1cm未満）、全ての勾配をゼロにしてフラットな水面として扱う
-    if (U_C.x < 0.01f) {
-        slopeHX_C = 0.0f;
-        slopeHY_C = 0.0f;
-        slopeVX_C = float2(0.0f, 0.0f);
-        slopeVY_C = float2(0.0f, 0.0f);
-    } else {
-        // 既存の流速制限（周囲が浅い場合）
-        if (U_L.x < 0.01f || U_R.x < 0.01f) slopeVX_C = float2(0.0f, 0.0f);
-        if (U_B.x < 0.01f || U_T.x < 0.01f) slopeVY_C = float2(0.0f, 0.0f);
-    }
-
-    // ==========================================================
-    // 3. セル境界の Eta と 流速(V) を予測
-    // セルの中心から境界に向かって勾配を半歩(0.5)進めた値を予測する。
-    // ==========================================================
-    // 境界のHを予測してから、地形Bを足してEtaを逆算する
-    float h_right_face_L_raw = U_C.x + 0.5f * slopeHX_C;
-    float h_right_face_R_raw = U_R.x - 0.5f * slopeHX_R;
-    float h_left_face_L_raw  = U_L.x + 0.5f * slopeHX_L;
-    float h_left_face_R_raw  = U_C.x - 0.5f * slopeHX_C;
-
-    float Eta_right_face_L = h_right_face_L_raw + B_C;
-    float Eta_right_face_R = h_right_face_R_raw + B_R;
-    float Eta_left_face_L  = h_left_face_L_raw  + B_L;
-    float Eta_left_face_R  = h_left_face_R_raw  + B_C;
-
-    float h_top_face_B_raw = U_C.x + 0.5f * slopeHY_C;
-    float h_top_face_T_raw = U_T.x - 0.5f * slopeHY_T;
-    float h_bottom_face_B_raw = U_B.x + 0.5f * slopeHY_B;
-    float h_bottom_face_T_raw = U_C.x - 0.5f * slopeHY_C;
-
-    float Eta_top_face_B = h_top_face_B_raw + B_C;
-    float Eta_top_face_T = h_top_face_T_raw + B_T;
-    float Eta_bottom_face_B = h_bottom_face_B_raw + B_B;
-    float Eta_bottom_face_T = h_bottom_face_T_raw + B_C;
-
-    // 流速予測はそのまま
-    float2 V_right_face_L  = V_C + 0.5f * slopeVX_C;
-    float2 V_right_face_R  = V_R - 0.5f * slopeVX_R;
-    float2 V_left_face_L   = V_L + 0.5f * slopeVX_L;
-    float2 V_left_face_R   = V_C - 0.5f * slopeVX_C;
-
-    float2 V_top_face_B  = V_C + 0.5f * slopeVY_C;
-    float2 V_top_face_T  = V_T - 0.5f * slopeVY_T;
-    float2 V_bottom_face_B  = V_B + 0.5f * slopeVY_B;
-    float2 V_bottom_face_T  = V_C - 0.5f * slopeVY_C;
-
-    // ==========================================================
-    // 4. 静水圧再構築（水深 h の逆算）
-    // 境界位置での新しい水深 h = max(0, Eta - B) を再計算する。
-    // (Hydrostatic Reconstruction)
-    // ==========================================================
     // X方向
-    float B_right_face = max(B_C, B_R);
-    float B_left_face  = max(B_L, B_C);
+    float3 fluxX_right, fluxX_left;
+    float source_X;
+    ComputeAxisFlux(
+        GetSWEState(ix - 2, iy), U_L, U_C, U_R, GetSWEState(ix + 2, iy),
+        B_L, B_C, B_R, fluxX_right, fluxX_left, source_X
+    );
 
-    float h_right_face_L = max(0.0f, Eta_right_face_L - B_right_face);
-    float h_right_face_R = max(0.0f, Eta_right_face_R - B_right_face);
-    float h_left_face_L  = max(0.0f, Eta_left_face_L - B_left_face);
-    float h_left_face_R  = max(0.0f, Eta_left_face_R - B_left_face);
+    // Y方向(スウィズル)
+    float3 fluxY_up, fluxY_down;
+    float source_Y;
+    ComputeAxisFlux(
+        GetSWEState(ix, iy - 2).xzy, U_B.xzy, U_C.xzy, U_T.xzy, GetSWEState(ix, iy + 2).xzy,
+        B_B, B_C, B_T, fluxY_up, fluxY_down, source_Y
+    );
+    fluxY_up = fluxY_up.xzy;
+    fluxY_down = fluxY_down.xzy;
 
-    // Y方向
-    float B_top_face    = max(B_C, B_T);
-    float B_bottom_face = max(B_B, B_C);
-
-    float h_top_face_B = max(0.0f, Eta_top_face_B - B_top_face);
-    float h_top_face_T = max(0.0f, Eta_top_face_T - B_top_face);
-    float h_bottom_face_B = max(0.0f, Eta_bottom_face_B - B_bottom_face);
-    float h_bottom_face_T = max(0.0f, Eta_bottom_face_T - B_bottom_face);
-
-    // ==========================================================
-    // 5. Fluxの計算と適用
-    // 予測した境界の左右(上下)の状態を使って、HLLソルバで流出入量を求める
-    // ==========================================================
-    float3 UL_right = float3(h_right_face_L, h_right_face_L * V_right_face_L);
-    float3 UR_right = float3(h_right_face_R, h_right_face_R * V_right_face_R);
-    float3 UL_left  = float3(h_left_face_L,  h_left_face_L  * V_left_face_L);
-    float3 UR_left  = float3(h_left_face_R,  h_left_face_R  * V_left_face_R);
-
-    float3 UB_top = float3(h_top_face_B, h_top_face_B * V_top_face_B);
-    float3 UT_top = float3(h_top_face_T, h_top_face_T * V_top_face_T);
-    float3 UB_bottom = float3(h_bottom_face_B, h_bottom_face_B * V_bottom_face_B);
-    float3 UT_bottom = float3(h_bottom_face_T, h_bottom_face_T * V_bottom_face_T);
-
-    float3 fluxX_right = HLL_FluxX(UL_right, UR_right);
-    float3 fluxX_left  = HLL_FluxX(UL_left, UR_left);
-    float3 fluxY_up    = HLL_FluxY(UB_top, UT_top);
-    float3 fluxY_down  = HLL_FluxY(UB_bottom, UT_bottom);
-
-    // --- 地形の壁判定によるフラックスの遮断 ---
-    // 流れる先の地形高(B)が、流れる元の水面高(Eta)より高い場合は物理的な壁として流れをゼロにする。
-
-    // X方向
-    if (fluxX_right.x > 0.0f && Eta_C <= B_R) fluxX_right = float3(0.0f, 0.0f, 0.0f); // C -> R をブロック
-    if (fluxX_right.x < 0.0f && Eta_R <= B_C) fluxX_right = float3(0.0f, 0.0f, 0.0f); // R -> C をブロック
-
-    if (fluxX_left.x > 0.0f && Eta_L <= B_C)  fluxX_left = float3(0.0f, 0.0f, 0.0f);  // L -> C をブロック
-    if (fluxX_left.x < 0.0f && Eta_C <= B_L)  fluxX_left = float3(0.0f, 0.0f, 0.0f);  // C -> L をブロック
-
-    // Y方向
-    if (fluxY_up.x > 0.0f && Eta_C <= B_T)    fluxY_up = float3(0.0f, 0.0f, 0.0f);    // C -> T をブロック
-    if (fluxY_up.x < 0.0f && Eta_T <= B_C)    fluxY_up = float3(0.0f, 0.0f, 0.0f);    // T -> C をブロック
-
-    if (fluxY_down.x > 0.0f && Eta_B <= B_C)  fluxY_down = float3(0.0f, 0.0f, 0.0f);  // B -> C をブロック
-    if (fluxY_down.x < 0.0f && Eta_C <= B_B)  fluxY_down = float3(0.0f, 0.0f, 0.0f);  // C -> B をブロック
-
-    // フラックスの差分から状態を更新 (保存則の適用)
-    // U_next = U_current - (dt / dx) * (Flux_right - Flux_left) - (dt / dy) * (Flux_top - Flux_bottom)
+    // 状態の更新 (保存則)
     float dtdx = _dtSwe / _dxSwe;
-    float3 dU = -dtdx * (fluxX_right - fluxX_left) - dtdx * (fluxY_up - fluxY_down);
+    current.h  += -dtdx * (fluxX_right.x - fluxX_left.x) - dtdx * (fluxY_up.x - fluxY_down.x);
+    current.hu += -dtdx * (fluxX_right.y - fluxX_left.y) - dtdx * (fluxY_up.y - fluxY_down.y) + dtdx * source_X;
+    current.hv += -dtdx * (fluxX_right.z - fluxX_left.z) - dtdx * (fluxY_up.z - fluxY_down.z) + dtdx * source_Y;
 
-    current.h  += dU.x;
-    current.hu += dU.y;
-    current.hv += dU.z;
-
-    // ==========================================================
-    // 6. 静水圧再構築の重力 (Well-Balanced Source Term)
-    // 傾斜した地形において、重力によって水が流れ落ちる力を運動量に追加する。
-    // これがないと、斜面にある静水が勝手に動き出してしまう。
-    // ==========================================================
-    float h_C_right_X = max(0.0f, Eta_right_face_L - B_C);
-    float h_C_left_X  = max(0.0f, Eta_left_face_R  - B_C);
-    float h_C_top_Y    = max(0.0f, Eta_top_face_B - B_C);
-    float h_C_bottom_Y = max(0.0f, Eta_bottom_face_T - B_C);
-
-    float source_X = 0.5f * G * (h_right_face_L * h_right_face_L - h_left_face_R * h_left_face_R)
-                   - 0.5f * G * (h_C_right_X * h_C_right_X       - h_C_left_X * h_C_left_X);
-
-    float source_Y = 0.5f * G * (h_top_face_B * h_top_face_B     - h_bottom_face_T * h_bottom_face_T)
-                   - 0.5f * G * (h_C_top_Y * h_C_top_Y           - h_C_bottom_Y * h_C_bottom_Y);
-
-    current.hu += dtdx * source_X;
-    current.hv += dtdx * source_Y;
-    
-    // ==========================================================
-    // 7. Wet / Dry 境界処理 (摩擦と減衰)
-    // 極端に浅い水深でのゼロ除算や異常加速を防ぐ安定化処理
-    // ==========================================================
+    // Wet / Dry 境界処理 (摩擦と減衰)
     float new_h  = current.h;
     float new_hu = current.hu;
     float new_hv = current.hv;
 
-    // マニングの粗度係数(n)を用いた底面摩擦力の計算
-    float n_manning = 0.01f; 
+    float n_manning = 0.01f;
     float2 vel = GetVelocity(new_h, new_hu, new_hv);
     float speed = length(vel);
     
-    float safe_h = max(new_h, 0.05f); // 0.05m(5cm)より浅い場合は、摩擦力をそれ以上強くしない
+    float safe_h = max(new_h, 0.05f);
     float friction = (G * n_manning * n_manning * speed) / pow(safe_h, 0.3333f);
-    float damp = 1.0f / (1.0f + _dtSwe * max(0.0f, friction)); // maxで保護
-    new_hu *= damp; 
+    float damp = 1.0f / (1.0f + _dtSwe * max(0.0f, friction));
+    new_hu *= damp;
     new_hv *= damp;
 
     float c = sqrt(G * max(new_h, 0.001f));
     float max_safe_speed = max(0.0f, (0.2f * _dxSwe / _dtSwe) - c);
-    
     if (speed > max_safe_speed) {
         float excess_speed = speed - max_safe_speed;
         float drag = max(0.0f, 1.0f - _dtSwe * excess_speed * excess_speed * 0.1f);
@@ -476,63 +324,50 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     float sponge_width = 12.0f; 
     float dist_x = min((float)ix, (float)(grid_w - 1 - ix));
     float dist_y = min((float)iy, (float)(grid_h - 1 - iy));
-    float dist = min(dist_x, dist_y);
-    float alpha = smoothstep(0.0f, 1.0f, dist / sponge_width);
+    float alpha = smoothstep(0.0f, 1.0f, min(dist_x, dist_y) / sponge_width);
 
-    float2 cellWorldPos = swe_world_offset + float2(ix, iy) * _dxSwe;
     if (alpha < 1.0f) {
-        // 陸地（B_C > 0）のときは H_MIN ではなく完全に 0.0f を目標値にする
-        float rest_h = max(0.0f - B_C, 0.0f); 
-        
-        float relaxation_rate = 2.0f;
-        new_h += (rest_h - new_h) * (1.0f - alpha) * _dtSwe * relaxation_rate;
-        
+        float rest_h = max(0.0f - B_C, 0.0f);
+        new_h += (rest_h - new_h) * (1.0f - alpha) * _dtSwe * 2.0f;
         new_hu *= (0.95f + 0.05f * alpha);
         new_hv *= (0.95f + 0.05f * alpha);
     }
-    // 極めて薄い水膜（5mm未満）は、斜面での異常加速を防ぐため速度を完全に殺す
-    // 質量（new_h）は維持されるためブラックホール現象は起きず、水は陸地に張り付いて静止する
-    if (new_h < 0.005f) 
-    {
+
+    if (new_h < 0.005f) {
         new_hu = 0.0f;
         new_hv = 0.0f;
     }
 
-    // ==========================================================
-    // 8. 泡 (Foam) の生成と移流・減衰
-    // 波の尖り具合(ラプラシアン)や流速をもとに白波を発生させ、速度場に従って移流させる
-    // ==========================================================
+    // 泡の生成と移流
     float safe_dx_foam = max(_dxSwe, 0.001f);
+    float Eta_L = U_L.x + B_L;
+    float Eta_R = U_R.x + B_R;
+    float Eta_B = U_B.x + B_B;
+    float Eta_T = U_T.x + B_T;
+    float Eta_C = U_C.x + B_C;
+    
     float laplacian_Eta_foam = (Eta_L + Eta_R + Eta_T + Eta_B - 4.0f * Eta_C) / (safe_dx_foam * safe_dx_foam);
-
-    // 地形の凸凹を波と誤認しないよう、水深が浅い場所（5cm未満）では泡の新規発生を殺すマスク
     float foam_gen_mask = smoothstep(0.01f, 0.05f, new_h);
 
     float crest_foam = (laplacian_Eta_foam < -1.5f) ? (-laplacian_Eta_foam * _dtSwe * 0.5f) : 0.0f;
     float shore_foam = (new_h > 0.02f && new_h < 0.3f && speed > 0.8f) ? (speed * _dtSwe * 1.5f) : 0.0f;
-
     crest_foam *= pow(alpha, 4.0f) * foam_gen_mask; 
     shore_foam *= alpha * foam_gen_mask;
 
-    // セミラグランジュ法による泡の移流
     float2 back_pos = float2(ix, iy) - vel * (_dtSwe / _dxSwe);
     int bx = clamp(round(back_pos.x), 0, grid_w - 1);
     int by = clamp(round(back_pos.y), 0, grid_h - 1);
     float advected_foam = SWE_State_Read[by * grid_w + bx].foam;
 
     float new_foam = advected_foam + crest_foam + shore_foam;
-    
-    // 泡の減衰
-    float base_decay = 0.5f; 
-    float shallow_decay_boost = smoothstep(0.05f, 0.00f, new_h) * 20.0f; 
-    float foam_decay = exp(-(base_decay + shallow_decay_boost) * _dtSwe); 
+    float foam_decay = exp(-(0.5f + smoothstep(0.05f, 0.0f, new_h) * 20.0f) * _dtSwe); 
     new_foam *= foam_decay;
 
-    if (new_h < 0.01f) 
-    {
+    if (new_h < 0.01f) {
         new_foam = max(0.0f, new_foam - _dtSwe * 5.0f);
     }
 
+    // 結果の書き込み
     SWECell nextState;
     nextState.h  = max(new_h, 0.0f);
     nextState.hu = (nextState.h > H_MIN) ? new_hu : 0.0f;
@@ -563,12 +398,10 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         SWE_State_Write[index] = current; return;
     }
 
-    // 重い計算（3x3平滑化や地形フェッチ）の前に、流速や深さだけで簡易的に弾く
     float speed_sq = current.hu * current.hu + current.hv * current.hv;
     float h_sq = current.h * current.h;
     
-    // フルード数(fr)の2乗による簡易判定
-    // speed / sqrt(g*h) > fr_threshold  =>  speed^2 / (g*h) > fr^2  => speed^2 > fr^2 * g * h
+    // フルード数で簡易判定して早期リターン
     float fr_sq_threshold = fr_threshold * fr_threshold;
     if (speed_sq < fr_sq_threshold * G * current.h) { 
         SWE_State_Write[index] = current; 
@@ -622,9 +455,9 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     float fr = speed / sqrt(G * safe_h);
 
     // 昇華(砕波)の判定条件
-    // 1. 水面の勾配 (Gradient) が閾値以上
-    // 2. 波の尖り具合 (Laplacian) がマイナスの閾値以下（凹から凸へ突き上げている）
-    // 3. フルード数 (Fr) が閾値以上
+    // 1. 水面の勾配が閾値以上
+    // 2. 波の尖り具合(ラプラシアン)がマイナスの閾値以下
+    // 3. フルード数が閾値以上
     bool is_breaking = false;
     if (grad_mag > grad_threshold) is_breaking = true;          
     if (laplacian_Eta < laplacian_threshold) is_breaking = true; // laplacian_h から変更
@@ -650,7 +483,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         InterlockedAdd(ParticleCounter[0], count, start_idx);
         uint spawned_count = 0;
 
-        // 質量保存を満たすように生成すべき粒子数を逆算する
+        // 質量保存を満たすように生成すべき粒子数を逆算
         for (uint i = 0; i < count; i++)
         {
             uint p_idx = (start_idx + i) % p_len;
@@ -675,8 +508,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
             if (flow_speed > 0.001f) flow_dir /= flow_speed;
             else flow_dir = float2(0.0f, 0.0f);
 
-            // 連続の式 div(u) = 0 に基づき、波が激しくぶつかって盛り上がる力
-            // (-laplacian_Eta) を、APIC粒子を上空に打ち上げる初速度(push_z)に変換する。
+            // 連続の式を利用して鉛直速度を計算
             float c_wave = sqrt(9.81f * safe_h);
             float curl_boost = c_wave * 0.8f; 
             float push_z = clamp(max(0.0f, -laplacian_Eta) * push_z_multiplier, 0.0f, c_wave);
