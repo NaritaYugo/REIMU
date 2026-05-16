@@ -87,8 +87,7 @@ float3 GetSWEState(int cx, int cy) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
     
-    if (cx < 0 || cx >= grid_w || cy < 0 || cy >= grid_h) 
-    {
+    if (cx < 0 || cx >= grid_w || cy < 0 || cy >= grid_h) {
         // 境界のセルの状態をそのままコピーして波を逃がす
         int clamp_x = clamp(cx, 0, grid_w - 1);
         int clamp_y = clamp(cy, 0, grid_h - 1);
@@ -711,11 +710,11 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID) {
 
     SWECell current = SWE_State_Read[index];
     
-    // 整数倍してアトミック加算していたので、10000.0fで割って戻す
-    float delta_h = (float)Delta_H_Buffer[index] / 10000.0f;
+    // 整数倍してアトミック加算していたので、ATOMIC_SCALEで割って戻す
+    float delta_h = (float)Delta_H_Buffer[index] / ATOMIC_SCALE;
     current.h  += delta_h;
-    current.hu += (float)Delta_HU_Buffer[index] / 10000.0f;
-    current.hv += (float)Delta_HV_Buffer[index] / 10000.0f;
+    current.hu += (float)Delta_HU_Buffer[index] / ATOMIC_SCALE;
+    current.hv += (float)Delta_HV_Buffer[index] / ATOMIC_SCALE;
 
     SWE_State_Write[index] = current;
 }

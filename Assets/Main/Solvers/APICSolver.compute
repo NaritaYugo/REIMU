@@ -234,10 +234,10 @@ void P2G_Transfer (uint3 id : SV_DispatchThreadID) {
                     
                     uint flat_idx = cz * (_ApicGridRes.x * _ApicGridRes.y) + cy * _ApicGridRes.x + cx;
 
-                    int add_mass = (int)(mass_contrib * 10000.0f);
-                    int add_velX = (int)(momentum_contrib.x * 10000.0f);
-                    int add_velY = (int)(momentum_contrib.y * 10000.0f);
-                    int add_velZ = (int)(momentum_contrib.z * 10000.0f);
+                    int add_mass = (int)(mass_contrib * ATOMIC_SCALE);
+                    int add_velX = (int)(momentum_contrib.x * ATOMIC_SCALE);
+                    int add_velY = (int)(momentum_contrib.y * ATOMIC_SCALE);
+                    int add_velZ = (int)(momentum_contrib.z * ATOMIC_SCALE);
 
                     InterlockedAdd(_ApicMassInt[flat_idx], add_mass);
                     InterlockedAdd(_ApicVelIntX[flat_idx], add_velX);
@@ -254,13 +254,13 @@ void NormalizeGridVelocity (uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_ApicGridRes)) return;
     uint idx = GetGridIndex(id);
     
-    // 10000.0f で割り戻して float にする
-    float mass = (float)_ApicMassInt[idx] / 10000.0f;
+    // ATOMIC_SCALE で割り戻して float にする
+    float mass = (float)_ApicMassInt[idx] / ATOMIC_SCALE;
     
     if (mass > 0.0001f) {
-        float vx = ((float)_ApicVelIntX[idx] / 10000.0f) / mass;
-        float vy = ((float)_ApicVelIntY[idx] / 10000.0f) / mass;
-        float vz = ((float)_ApicVelIntZ[idx] / 10000.0f) / mass;
+        float vx = ((float)_ApicVelIntX[idx] / ATOMIC_SCALE) / mass;
+        float vy = ((float)_ApicVelIntY[idx] / ATOMIC_SCALE) / mass;
+        float vz = ((float)_ApicVelIntZ[idx] / ATOMIC_SCALE) / mass;
         
         // 後の計算で float として読み出せるよう asint で格納
         _ApicVelIntX[idx] = asint(vx);
@@ -507,9 +507,9 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID) {
                     float delta_hu = (delta_hu_mass + delta_hu_wave) / swe_cell_area;
                     float delta_hv = (delta_hv_mass + delta_hv_wave) / swe_cell_area;
 
-                    InterlockedAdd(Delta_H_Buffer[flat_idx],  (int)(delta_h * 10000.0f));
-                    InterlockedAdd(Delta_HU_Buffer[flat_idx], (int)(delta_hu * 10000.0f));
-                    InterlockedAdd(Delta_HV_Buffer[flat_idx], (int)(delta_hv * 10000.0f));
+                    InterlockedAdd(Delta_H_Buffer[flat_idx],  (int)(delta_h * ATOMIC_SCALE));
+                    InterlockedAdd(Delta_HU_Buffer[flat_idx], (int)(delta_hu * ATOMIC_SCALE));
+                    InterlockedAdd(Delta_HV_Buffer[flat_idx], (int)(delta_hv * ATOMIC_SCALE));
                 }
             }
         }

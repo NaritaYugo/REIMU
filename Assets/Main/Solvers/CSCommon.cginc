@@ -27,6 +27,7 @@ struct APICParticle {
 static const float G = 9.81f;
 static const float EPSILON = 1e-6f;
 static const float H_MIN = 0.001f;
+static const float ATOMIC_SCALE = 10000.0f;
 
 // ==========================================
 // 共通のシミュレーション変数
