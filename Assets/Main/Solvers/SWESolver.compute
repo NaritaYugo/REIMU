@@ -46,9 +46,8 @@ SamplerState sampler_LinearRepeat {
 };
 
 // ==========================================
-// ヘルパー関数群
+// ヘルパー関数
 // ==========================================
-
 float GetBedElevation(int ix, int iy) {
     int grid_w = (int)_SweGridRes.x;
     int grid_h = (int)_SweGridRes.y;
@@ -205,6 +204,9 @@ inline float3 HLL_FluxY(float3 UB, float3 UT) {
     else return float3(0.0f, 0.0f, 0.0f);
 }
 
+// ==========================================
+// カーネル
+// ==========================================
 [numthreads(8, 8, 1)]
 void InitSwe(uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
@@ -226,9 +228,6 @@ void InitSwe(uint3 id : SV_DispatchThreadID) {
     SWE_State_Write[index] = cell;
 }
 
-// ==========================================
-// メイン演算カーネル (UpdateSwe)
-// ==========================================
 [numthreads(8, 8, 1)]
 void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
@@ -542,9 +541,7 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     SWE_State_Write[index] = nextState;
 }
 
-// ==========================================
-// 昇華カーネル (SWE -> APIC)
-// ==========================================
+// SWEからAPIC
 [numthreads(8, 8, 1)]
 void Sublimate (uint3 id : SV_DispatchThreadID) {
     int grid_w = (int)_SweGridRes.x;
