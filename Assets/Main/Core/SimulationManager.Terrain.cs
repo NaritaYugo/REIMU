@@ -28,19 +28,19 @@ public partial class SimulationManager
             float targetBaseZ = gridCenter.z - sweGridRes.y * dxSwe * 0.5f;
 
             // セル単位（dxSwe）でどれだけ移動したかを計算
-            int shiftCellsX = Mathf.RoundToInt((targetBaseX - sweWorldOffset.x) / dxSwe);
-            int shiftCellsY = Mathf.RoundToInt((targetBaseZ - sweWorldOffset.y) / dxSwe);
+            int shiftCellsX = Mathf.RoundToInt((targetBaseX - worldOffset.x) / dxSwe);
+            int shiftCellsY = Mathf.RoundToInt((targetBaseZ - worldOffset.y) / dxSwe);
 
-            Vector2 nextSweWorldOffset = sweWorldOffset + new Vector2(shiftCellsX * dxSwe, shiftCellsY * dxSwe);
+            Vector2 nextWorldOffset = worldOffset + new Vector2(shiftCellsX * dxSwe, shiftCellsY * dxSwe);
             
             // グリッドが1セル以上移動した場合のみ、情報をシフト（スクロール）させる
             if (shiftCellsX != 0 || shiftCellsY != 0)
             {
-                sweWorldOffset = nextSweWorldOffset; 
+                worldOffset = nextWorldOffset; 
                 CaptureTerrainHeight();
                 
                 sweCS.SetInts("shift_amount", new int[] { shiftCellsX, shiftCellsY });
-                sweCS.SetVector("_SweWorldOffset", sweWorldOffset);
+                sweCS.SetVector("_WorldOffset", worldOffset);
                 
                 if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                     sweCS.SetTexture(sweKernels.ShiftSweGrid, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
@@ -57,14 +57,12 @@ public partial class SimulationManager
                 sweCS.Dispatch(sweKernels.ShiftSweGrid, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
                 SwapSWEBuffers();
             }
-            
-            apicWorldOffset = new Vector3(sweWorldOffset.x, sweWorldOffset.y, m_VirtualSeaBottomHeight);
         }
 
         if (!isSWEInitialized)
         {
             CaptureTerrainHeight();
-            sweCS.SetVector("_SweWorldOffset", sweWorldOffset);
+            sweCS.SetVector("_WorldOffset", worldOffset);
             
             sweCS.SetTexture(sweKernels.InitSwe, "TerrainHeightMap", terrainHeightMap);
             sweCS.SetBuffer(sweKernels.InitSwe, "SWE_State_Write", buffers.sweStateWrite);
@@ -84,8 +82,8 @@ public partial class SimulationManager
     {
         if (terrainHeightMap == null) return;
         float[] heights = new float[sweGridRes.x * sweGridRes.y];
-        float startX = sweWorldOffset.x + dxSwe * 0.5f;
-        float startZ = sweWorldOffset.y + dxSwe * 0.5f;
+        float startX = worldOffset.x + dxSwe * 0.5f;
+        float startZ = worldOffset.y + dxSwe * 0.5f;
 
         float waterSurfaceY = 0f; 
         float maxSimulationDepth = 5.0f; 

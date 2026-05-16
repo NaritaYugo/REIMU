@@ -56,14 +56,12 @@ public partial class SimulationManager
         float currentCellSize = dxApic / m_McCellsPerApicCell;
 
         if (voxelizerCS != null) {
-            voxelizerCS.SetVector("_ApicWorldOffset", apicWorldOffset);
-            voxelizerCS.SetVector("_SweWorldOffset", sweWorldOffset);
+            voxelizerCS.SetVector("_WorldOffset", worldOffset);
             voxelizerCS.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
             voxelizerCS.SetFloat("_CellSize", currentCellSize);        
             voxelizerCS.SetFloat("_ParticleRadius", m_McParticleRadius);  
             voxelizerCS.SetFloat("_IsoLevel", m_IsoLevelTH);   
             voxelizerCS.SetFloat("_SplashSpeedThreshold", m_SplashStretchTH);
-            voxelizerCS.SetFloat("sea_bottom_z", m_VirtualSeaBottomHeight);
 
             // =========================================================
             // Step 13-1: ボクセルグリッドの初期化
@@ -158,7 +156,7 @@ public partial class SimulationManager
             splashMaterial.SetFloat("_CellSize", currentCellSize);
             splashMaterial.SetFloat("_SpeedThreshold", m_SplashStretchTH);
             splashMaterial.SetBuffer("APIC_Particle_Buffer", buffers.apicParticle);
-            splashMaterial.SetVector("_ApicWorldOffset", apicWorldOffset);
+            splashMaterial.SetVector("_WorldOffset", worldOffset);
 
             if (buffers.voxelFinalDensity != null) {
                 splashMaterial.SetBuffer("VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
@@ -176,13 +174,12 @@ public partial class SimulationManager
                 fftOceanMaterial.SetFloat("FFT_Size0", fftOcean.domainSizes[0]);
                 fftOceanMaterial.SetFloat("FFT_Size1", fftOcean.domainSizes[1]);
                 fftOceanMaterial.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
-                fftOceanMaterial.SetFloat("SeaBottomZ", m_VirtualSeaBottomHeight);
             }
             if (buffers.sweStateRead != null) {
                 fftOceanMaterial.SetBuffer("SWE_State_Buffer", buffers.sweStateRead);
                 fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
                 fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
-                fftOceanMaterial.SetVector("_SweWorldOffset", sweWorldOffset);
+                fftOceanMaterial.SetVector("_WorldOffset", worldOffset);
             }
             if (buffers.voxelFinalDensity != null) {
                 fftOceanMaterial.SetBuffer("VoxelGrid_FinalDensity", buffers.voxelFinalDensity);

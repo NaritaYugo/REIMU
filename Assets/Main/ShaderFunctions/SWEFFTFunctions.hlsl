@@ -164,7 +164,6 @@ void GetSWEAndTerrainBilinear(int swe_width, float fx, float fz, out float outSW
 void GetUnifiedOcean_float(
     float3 WorldPos, float Size0, float Size1, float Size2,
     float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
-    float sea_bottom_z_In, 
     out float3 OutPosition)
 {
     // 1. FFT領域(背景)の波高を計算
