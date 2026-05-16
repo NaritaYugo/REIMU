@@ -157,8 +157,8 @@ void AdvectParticles (uint3 id : SV_DispatchThreadID)
     APICParticle p = APIC_Particle_Buffer[index];
     if (p.mass <= 0.0f) return;
 
-    p.velocity.z -= G * dt_apic;
-    p.position += p.velocity * dt_apic;
+    p.velocity.z -= G * _dtApic;
+    p.position += p.velocity * _dtApic;
 
     float3 apic_origin = GetAPICOrigin();
     float3 min_bounds = apic_origin;
@@ -309,7 +309,7 @@ void ComputeDivergence (uint3 id : SV_DispatchThreadID)
     // ポアソン方程式 Laplacian(p) = rhs の右辺
     // rhs = - (dx^2 / dt) * div(u) * theta
     // ※thetaはSWEの境界（Fractional Volume）を考慮した係数
-    APIC_Divergence[idx] = -(_dxApic * _dxApic / dt_apic) * div * theta_c;
+    APIC_Divergence[idx] = -(_dxApic * _dxApic / _dtApic) * div * theta_c;
 }
 
 // ==========================================
@@ -381,7 +381,7 @@ void G2P_Transfer (uint3 id : SV_DispatchThreadID)
                     
                     // 投影法 (Projection Method): 圧力勾配を使って速度を補正
                     // v_corrected = v_star - dt * grad_p
-                    corrected_vel = vel_star - dt_apic * grad_p;
+                    corrected_vel = vel_star - _dtApic * grad_p;
                 }
 
                 float3 d_pos = grid_pos - (float3)cell_idx;
@@ -449,7 +449,7 @@ void CondenseParticles (uint3 id : SV_DispatchThreadID)
     int cx_center = clamp(center_idx.x, 0, grid_w - 1);
     int cy_center = clamp(center_idx.y, 0, grid_h - 1);
 
-    p.age += dt_apic;
+    p.age += _dtApic;
 
     uint flat_center = cy_center * grid_w + cx_center;
 

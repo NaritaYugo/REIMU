@@ -40,8 +40,8 @@ int M_ratio;             // 解像度比 (M = _dxApic / _dxSwe)
 float base_mass;         // 粒子の基準質量
 float sea_bottom_z;      // 仮想水深（海底の基準高さ）
 
-float dt_apic;           // APICのタイムステップ
-float dt_swe;            // SWEのサブタイムステップ
+float _dtApic;           // APICのタイムステップ
+float _dtSwe;            // SWEのサブタイムステップ
 float3 apic_world_offset;// APIC領域のワールド座標オフセット
 float2 swe_world_offset; // SWE領域のワールド座標オフセット
 

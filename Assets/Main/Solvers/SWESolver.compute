@@ -428,7 +428,7 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
 
     // フラックスの差分から状態を更新 (保存則の適用)
     // U_next = U_current - (dt / dx) * (Flux_right - Flux_left) - (dt / dy) * (Flux_top - Flux_bottom)
-    float dtdx = dt_swe / _dxSwe;
+    float dtdx = _dtSwe / _dxSwe;
     float3 dU = -dtdx * (fluxX_right - fluxX_left) - dtdx * (fluxY_up - fluxY_down);
 
     current.h  += dU.x;
@@ -469,16 +469,16 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     
     float safe_h = max(new_h, 0.05f); // 0.05m(5cm)より浅い場合は、摩擦力をそれ以上強くしない
     float friction = (G * n_manning * n_manning * speed) / pow(safe_h, 0.3333f);
-    float damp = 1.0f / (1.0f + dt_swe * max(0.0f, friction)); // maxで保護
+    float damp = 1.0f / (1.0f + _dtSwe * max(0.0f, friction)); // maxで保護
     new_hu *= damp; 
     new_hv *= damp;
 
     float c = sqrt(G * max(new_h, 0.001f));
-    float max_safe_speed = max(0.0f, (0.2f * _dxSwe / dt_swe) - c);
+    float max_safe_speed = max(0.0f, (0.2f * _dxSwe / _dtSwe) - c);
     
     if (speed > max_safe_speed) {
         float excess_speed = speed - max_safe_speed;
-        float drag = max(0.0f, 1.0f - dt_swe * excess_speed * excess_speed * 0.1f);
+        float drag = max(0.0f, 1.0f - _dtSwe * excess_speed * excess_speed * 0.1f);
         new_hu *= drag; 
         new_hv *= drag;
     }
@@ -495,7 +495,7 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
         float rest_h = max(0.0f - B_C, 0.0f); 
         
         float relaxation_rate = 2.0f;
-        new_h += (rest_h - new_h) * (1.0f - alpha) * dt_swe * relaxation_rate;
+        new_h += (rest_h - new_h) * (1.0f - alpha) * _dtSwe * relaxation_rate;
         
         new_hu *= (0.95f + 0.05f * alpha);
         new_hv *= (0.95f + 0.05f * alpha);
@@ -518,14 +518,14 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     // 地形の凸凹を波と誤認しないよう、水深が浅い場所（5cm未満）では泡の新規発生を殺すマスク
     float foam_gen_mask = smoothstep(0.01f, 0.05f, new_h);
 
-    float crest_foam = (laplacian_Eta_foam < -1.5f) ? (-laplacian_Eta_foam * dt_swe * 0.5f) : 0.0f;
-    float shore_foam = (new_h > 0.02f && new_h < 0.3f && speed > 0.8f) ? (speed * dt_swe * 1.5f) : 0.0f;
+    float crest_foam = (laplacian_Eta_foam < -1.5f) ? (-laplacian_Eta_foam * _dtSwe * 0.5f) : 0.0f;
+    float shore_foam = (new_h > 0.02f && new_h < 0.3f && speed > 0.8f) ? (speed * _dtSwe * 1.5f) : 0.0f;
 
     crest_foam *= pow(alpha, 4.0f) * foam_gen_mask; 
     shore_foam *= alpha * foam_gen_mask;
 
     // セミラグランジュ法による泡の移流
-    float2 back_pos = float2(ix, iy) - vel * (dt_swe / _dxSwe);
+    float2 back_pos = float2(ix, iy) - vel * (_dtSwe / _dxSwe);
     int bx = clamp(round(back_pos.x), 0, grid_w - 1);
     int by = clamp(round(back_pos.y), 0, grid_h - 1);
     float advected_foam = SWE_State_Read[by * grid_w + bx].foam;
@@ -535,12 +535,12 @@ void UpdateSWE (uint3 id : SV_DispatchThreadID)
     // 泡の減衰
     float base_decay = 0.5f; 
     float shallow_decay_boost = smoothstep(0.05f, 0.00f, new_h) * 20.0f; 
-    float foam_decay = exp(-(base_decay + shallow_decay_boost) * dt_swe); 
+    float foam_decay = exp(-(base_decay + shallow_decay_boost) * _dtSwe); 
     new_foam *= foam_decay;
 
     if (new_h < 0.01f) 
     {
-        new_foam = max(0.0f, new_foam - dt_swe * 5.0f);
+        new_foam = max(0.0f, new_foam - _dtSwe * 5.0f);
     }
 
     SWECell nextState;
@@ -645,7 +645,7 @@ void SublimateSWEtoAPIC (uint3 id : SV_DispatchThreadID)
 
     if (is_breaking)
     {
-        float conversion_rate = 1.0f - exp(-conversion_rate_multiplier * dt_swe); 
+        float conversion_rate = 1.0f - exp(-conversion_rate_multiplier * _dtSwe); 
         float delta_h = (current.h - h_min) * conversion_rate;
         if (delta_h < 0.05f) { SWE_State_Write[index] = current; return; }
 
@@ -744,8 +744,8 @@ void InteractSWE (uint3 id : SV_DispatchThreadID)
         if (distance(cell_world_pos, mouse_pos) < mouse_radius)
         {
             if (current.h > 0.01f) {
-                current.hu += mouse_dir.x * mouse_force * dt_apic * current.h;
-                current.hv += mouse_dir.y * mouse_force * dt_apic * current.h;
+                current.hu += mouse_dir.x * mouse_force * _dtApic * current.h;
+                current.hv += mouse_dir.y * mouse_force * _dtApic * current.h;
             }
         }
     }

@@ -205,7 +205,7 @@ public partial class SimulationManager
             if (sweStateBufferRead != null) {
                 fftOceanMaterial.SetBuffer("SWE_State_Buffer", sweStateBufferRead);
                 fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
-                fftOceanMaterial.SetFloat("_dx_swe", dxSwe);
+                fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
                 fftOceanMaterial.SetVector("_swe_world_offset", sweWorldOffset);
             }
             if (voxelFinalDensityBuffer != null) {

@@ -200,7 +200,7 @@ public partial class SimulationManager : MonoBehaviour
         if (sweStateBufferRead == null || trackTarget == null) return;
 
         // --- 動的タイムステップ(CFL条件)の計算 ---
-        float dt_apic = Mathf.Min(Time.deltaTime, 0.0333f);
+        float dtApic = Mathf.Min(Time.deltaTime, 0.0333f);
         
         // サブサイクリング回数を決定するためのヒューリスティックな予測値
         float expected_max_depth = 50.0f;
@@ -208,9 +208,9 @@ public partial class SimulationManager : MonoBehaviour
         float expected_max_velocity = 15.0f; 
         
         // 波の速度がセルを飛び越えない安全なSWEの最大タイムステップを算出
-        float dt_swe_max = 0.20f * dxSwe / (expected_wave_speed + expected_max_velocity); 
-        int subSteps = Mathf.CeilToInt(dt_apic / dt_swe_max);
-        float dt_swe = dt_apic / subSteps;
+        float dtSwe_max = 0.20f * dxSwe / (expected_wave_speed + expected_max_velocity); 
+        int subSteps = Mathf.CeilToInt(dtApic / dtSwe_max);
+        float dtSwe = dtApic / subSteps;
 
         // 追従・地形処理は別ファイルに分割したメソッドを呼ぶ
         UpdateTrackingAndTerrain();
@@ -218,8 +218,8 @@ public partial class SimulationManager : MonoBehaviour
         ComputeShader[] shaders = { sweCS, apicCS };
         foreach (var cs in shaders)
         {
-            cs.SetFloat("dt_swe", dt_swe);
-            cs.SetFloat("dt_apic", dt_apic);
+            cs.SetFloat("_dtSwe", dtSwe);
+            cs.SetFloat("_dtApic", dtApic);
             cs.SetVector("apic_world_offset", apicWorldOffset);
             cs.SetVector("swe_world_offset", sweWorldOffset);
         }
@@ -240,7 +240,7 @@ public partial class SimulationManager : MonoBehaviour
                 if (wasMouseDown)
                 {
                     Vector3 delta = hitPoint - prevMousePos;
-                    mouseDirSWE = new Vector2(delta.x, delta.z) / dt_apic;
+                    mouseDirSWE = new Vector2(delta.x, delta.z) / dtApic;
                     if (mouseDirSWE.sqrMagnitude > 0.01f) mouseActive = 1;
                 }
                 prevMousePos = hitPoint;
