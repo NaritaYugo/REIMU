@@ -107,6 +107,7 @@ Material:
     - _Size2: 320
     - _Tranparency: 6.5
     - _VoronoiDensity: 188.5
+    - _dxSwe: 0.5
     - _dx_swe: 0.5
     - _foamEdge1: 0.06
     - _foamEdge2: 0.44
@@ -124,8 +125,10 @@ Material:
     - _DeepWaterColor: {r: 0.27468133, g: 0.5590542, b: 0.6528301, a: 1}
     - _SWE_WorldOffset: {r: -34, g: 32, b: 0, a: 0}
     - _ShallowWaterColor: {r: 0.61548597, g: 0.9622642, b: 0.8948351, a: 1}
+    - _SweWorldOffset: {r: -93.2, g: -14.599998, b: 0, a: 0}
     - _WaterColor: {r: 0.3136418, g: 0.81886786, b: 0.7898319, a: 1}
-    - _swe_world_offset: {r: -97.2, g: 6.4000015, b: 0, a: 0}
+    - _WorldOffset: {r: -85.2, g: -45.6, b: 0, a: 0}
+    - _swe_world_offset: {r: -72.7, g: -26.599998, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &261136574170066110

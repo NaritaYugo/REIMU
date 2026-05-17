@@ -33,7 +33,7 @@ Material:
     - _Shininess: 167.71
     - _SparkleProbability: 1
     - _SpeedForMin: 15
-    - _SpeedThreshold: 1
+    - _SpeedThreshold: 10
     - _SplashSize: 0.05
     - _StretchMultiplier: 0.05
     m_Colors:
