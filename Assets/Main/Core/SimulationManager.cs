@@ -288,7 +288,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntY", buffers.apicGridVelY);
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntZ", buffers.apicGridVelZ);
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicDivergence", buffers.apicDivergence);
-        apicCS.SetBuffer(apicKernels.ClearApicGrid, "__ApicPressure_W", buffers.apicPressureWrite);
+        apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicPressure_W", buffers.apicPressureWrite);
         apicCS.Dispatch(apicKernels.ClearApicGrid, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
 
         // =========================================================
@@ -480,7 +480,7 @@ public partial class SimulationManager : MonoBehaviour
 
             apicCS.SetTexture(apicKernels.UpdatePR, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_ApicMassInt", buffers.apicGridMass);
-            apicCS.SetBuffer(apicKernels.UpdatePR, "__ApicPressure_W", buffers.apicPressureWrite);
+            apicCS.SetBuffer(apicKernels.UpdatePR, "_ApicPressure_W", buffers.apicPressureWrite);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgP", buffers.pcgP);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgQ", buffers.pcgQ);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgR", buffers.pcgR);
