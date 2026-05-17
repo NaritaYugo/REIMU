@@ -3,14 +3,12 @@ using UnityEngine;
 public partial class SimulationManager
 {
     [Header("Environment Capture")]
-    [Tooltip("地形としてハイトマップに焼き付ける対象のレイヤー")]
     public LayerMask terrainLayer;
     private Texture2D terrainHeightMap;
     private bool isSWEInitialized = false;
 
     private void InitializeTerrain()
     {
-        // 浮動小数点テクスチャ(RFloat)を使うことで、精度の高い地形高をGPUに渡す
         terrainHeightMap = new Texture2D(sweGridRes.x, sweGridRes.y, TextureFormat.RFloat, false)
         {
             filterMode = FilterMode.Bilinear,
@@ -22,12 +20,10 @@ public partial class SimulationManager
     {
         if (trackTarget != null)
         {
-            // プレイヤー（ターゲット）を中心にシミュレーション領域を追従させる
             Vector3 gridCenter = trackTarget.position;
             float targetBaseX = gridCenter.x - sweGridRes.x * dxSwe * 0.5f;
             float targetBaseZ = gridCenter.z - sweGridRes.y * dxSwe * 0.5f;
 
-            // セル単位（dxSwe）でどれだけ移動したかを計算
             int shiftCellsX = Mathf.RoundToInt((targetBaseX - worldOffset.x) / dxSwe);
             int shiftCellsY = Mathf.RoundToInt((targetBaseZ - worldOffset.y) / dxSwe);
 
@@ -52,8 +48,8 @@ public partial class SimulationManager
                 }
                 
                 sweCS.SetTexture(sweKernels.ShiftSweGrid, "TerrainHeightMap", terrainHeightMap); 
-                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "SWE_State_Read", buffers.sweStateRead);
-                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "SWE_State_Write", buffers.sweStateWrite);
+                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "_SweState_R", buffers.sweStateRead);
+                sweCS.SetBuffer(sweKernels.ShiftSweGrid, "_SweState_W", buffers.sweStateWrite);
                 sweCS.Dispatch(sweKernels.ShiftSweGrid, (sweGridRes.x + 7) / 8, (sweGridRes.y + 7) / 8, 1);
                 SwapSWEBuffers();
             }
@@ -65,7 +61,7 @@ public partial class SimulationManager
             sweCS.SetVector("_WorldOffset", worldOffset);
             
             sweCS.SetTexture(sweKernels.InitSwe, "TerrainHeightMap", terrainHeightMap);
-            sweCS.SetBuffer(sweKernels.InitSwe, "SWE_State_Write", buffers.sweStateWrite);
+            sweCS.SetBuffer(sweKernels.InitSwe, "_SweState_W", buffers.sweStateWrite);
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                 sweCS.SetTexture(sweKernels.InitSwe, "FFT_DispLOD0", fftOcean.displacementMaps[0]);
                 sweCS.SetTexture(sweKernels.InitSwe, "FFT_DispLOD1", fftOcean.displacementMaps[1]);
@@ -96,7 +92,7 @@ public partial class SimulationManager
                 float worldX = startX + x * dxSwe;
                 float worldZ = startZ + y * dxSwe;
                 // 上空(Y=1000)から真下へレイを飛ばす
-                Vector3 rayStart = new Vector3(worldX, 1000f, worldZ);
+                Vector3 rayStart = new(worldX, 1000f, worldZ);
                 
                 if (Physics.Raycast(rayStart, Vector3.down, out RaycastHit hit, 2000f, terrainLayer))
                 {

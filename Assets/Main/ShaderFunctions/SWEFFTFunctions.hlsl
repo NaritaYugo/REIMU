@@ -11,7 +11,7 @@ Texture2D<float4> FFT_DispLOD2; SamplerState samplerFFT_DispLOD2;
 Texture2D<float> TerrainHeightMap; SamplerState samplerTerrainHeightMap;
 
 struct SWECell { float h; float hu; float hv; float foam; };
-StructuredBuffer<SWECell> SWE_State_Buffer;
+StructuredBuffer<SWECell> _SweState_R;
 
 // ==========================================================
 // 1. 深度計算 (DepthFunc)
@@ -141,10 +141,10 @@ void GetSWEAndTerrainBilinear(int swe_width, float fx, float fz, out float outSW
     float tx = frac(shiftedX);
     float tz = frac(shiftedZ);
 
-    float h00 = SWE_State_Buffer[z0 * swe_width + x0].h;
-    float h10 = SWE_State_Buffer[z0 * swe_width + x1].h;
-    float h01 = SWE_State_Buffer[z1 * swe_width + x0].h;
-    float h11 = SWE_State_Buffer[z1 * swe_width + x1].h;
+    float h00 = _SweState_R[z0 * swe_width + x0].h;
+    float h10 = _SweState_R[z0 * swe_width + x1].h;
+    float h01 = _SweState_R[z1 * swe_width + x0].h;
+    float h11 = _SweState_R[z1 * swe_width + x1].h;
 
     float b00 = TerrainHeightMap.Load(int3(x0, z0, 0)).r;
     float b10 = TerrainHeightMap.Load(int3(x1, z0, 0)).r;
@@ -277,10 +277,10 @@ void GetUnifiedFoam_float(
             float tx = frac(shiftedX);
             float tz = frac(shiftedZ);
 
-            float f00 = SWE_State_Buffer[z0 * swe_w_int + x0].foam;
-            float f10 = SWE_State_Buffer[z0 * swe_w_int + x1].foam;
-            float f01 = SWE_State_Buffer[z1 * swe_w_int + x0].foam;
-            float f11 = SWE_State_Buffer[z1 * swe_w_int + x1].foam;
+            float f00 = _SweState_R[z0 * swe_w_int + x0].foam;
+            float f10 = _SweState_R[z0 * swe_w_int + x1].foam;
+            float f01 = _SweState_R[z1 * swe_w_int + x0].foam;
+            float f11 = _SweState_R[z1 * swe_w_int + x1].foam;
 
             float f0 = lerp(f00, f10, tx);
             float f1 = lerp(f01, f11, tx);

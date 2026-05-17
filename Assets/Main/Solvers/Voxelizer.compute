@@ -20,8 +20,8 @@ float _ParticleRadius;
 float _IsoLevel;
 float _SplashSpeedThreshold;
 
-StructuredBuffer<APICParticle> ParticleBuffer;
-StructuredBuffer<SWECell> SWE_State_Read;
+StructuredBuffer<APICParticle> _ParticleBuffer;
+StructuredBuffer<SWECell> _SweState_R;
 RWStructuredBuffer<float> VoxelGrid_FoamFactor; 
 float _FoamSampleRadius;
 
@@ -37,8 +37,8 @@ RWStructuredBuffer<float> VoxelGrid_FinalDensity;
 AppendStructuredBuffer<Triangle> TriangleBuffer;
 StructuredBuffer<int> edgeTable;
 StructuredBuffer<int> triTable;
-StructuredBuffer<uint> ActiveParticleList_Read;
-ByteAddressBuffer ActiveParticleCount;
+StructuredBuffer<uint> _ActiveParticleList_R;
+ByteAddressBuffer _ActiveParticleCount;
 
 Texture2D<float4> FFT_DispLOD0;
 Texture2D<float4> FFT_DispLOD1;
@@ -84,11 +84,11 @@ void ClearVoxelGrid(uint3 id : SV_DispatchThreadID) {
 // ==========================================
 [numthreads(64,1,1)]
 void SplatParticles(uint3 id : SV_DispatchThreadID) {
-    uint count = ActiveParticleCount.Load(0);
+    uint count = _ActiveParticleCount.Load(0);
     if (id.x >= count) return;
     
-    uint index = ActiveParticleList_Read[id.x];
-    APICParticle p = ParticleBuffer[index];
+    uint index = _ActiveParticleList_R[id.x];
+    APICParticle p = _ParticleBuffer[index];
     if (p.mass <= 0.0) return;
 
     float3 voxel_origin = GetVoxelOrigin();
@@ -175,7 +175,7 @@ void SplatSWE(uint3 id : SV_DispatchThreadID) {
     int sweY = clamp(int(sweLocalY / _dxSwe), 0, _SweGridRes.y - 1); 
     int sweIdx = sweY * _SweGridRes.x + sweX;
 
-    float h = SWE_State_Read[sweIdx].h;
+    float h = _SweState_R[sweIdx].h;
     
     // 水深が極端に浅い陸地の水はボクセル化しない（霜柱とZファイティング防止）
     if (h < 0.05) return; 

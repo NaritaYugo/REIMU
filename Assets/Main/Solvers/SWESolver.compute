@@ -8,13 +8,13 @@
 
 #include "CSCommon.cginc"
 
-StructuredBuffer<SWECell> SWE_State_Read;
-RWStructuredBuffer<SWECell> SWE_State_Write;
-RWStructuredBuffer<APICParticle> APIC_Particle_Buffer;
-RWStructuredBuffer<uint> ParticleCounter;
-RWStructuredBuffer<int> Delta_H_Buffer;
-RWStructuredBuffer<int> Delta_HU_Buffer;
-RWStructuredBuffer<int> Delta_HV_Buffer;
+StructuredBuffer<SWECell> _SweState_R;
+RWStructuredBuffer<SWECell> _SweState_W;
+RWStructuredBuffer<APICParticle> _ApicParticle;
+RWStructuredBuffer<uint> _ParticleCounter;
+RWStructuredBuffer<int> _DeltaHInt;
+RWStructuredBuffer<int> _DeltaHuInt;
+RWStructuredBuffer<int> _DeltaHvInt;
 
 Texture2D<float4> FFT_DispLOD0;
 Texture2D<float4> FFT_DispLOD1;
@@ -33,11 +33,11 @@ float push_z_multiplier;
 float splash_velocity_multiplier;
 int2 shift_amount;
 
-float2 mouse_pos;
-float2 mouse_dir;
-float mouse_radius;
-float mouse_force;
-int mouse_active;
+float2 _MousePos;
+float2 _MouseDir;
+float _MouseRadius;
+float _MouseForce;
+int _MouseActive;
 
 SamplerState sampler_LinearRepeat {
     Filter = MIN_MAG_MIP_LINEAR;
@@ -97,10 +97,10 @@ float3 GetSWEState(int cx, int cy) {
         // 境界のセルの状態をそのままコピーして波を逃がす
         int clamp_x = clamp(cx, 0, grid_w - 1);
         int clamp_y = clamp(cy, 0, grid_h - 1);
-        SWECell edge_cell = SWE_State_Read[clamp_y * grid_w + clamp_x];
+        SWECell edge_cell = _SweState_R[clamp_y * grid_w + clamp_x];
         return float3(edge_cell.h, edge_cell.hu, edge_cell.hv);
     }
-    SWECell cell = SWE_State_Read[cy * grid_w + cx];
+    SWECell cell = _SweState_R[cy * grid_w + cx];
     return float3(cell.h, cell.hu, cell.hv);
 }
 
@@ -246,7 +246,7 @@ void InitSwe(uint3 id : SV_DispatchThreadID) {
     cell.hu = 0.0f;
     cell.hv = 0.0f;
     cell.foam = 0.0f;
-    SWE_State_Write[index] = cell;
+    _SweState_W[index] = cell;
 }
 
 [numthreads(8, 8, 1)]
@@ -258,7 +258,7 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     if (ix >= grid_w || iy >= grid_h) return;
 
     uint index = iy * grid_w + ix;
-    SWECell current = SWE_State_Read[index];
+    SWECell current = _SweState_R[index];
     float3 U_C = float3(current.h, current.hu, current.hv);
     float B_C = GetBedElevation(ix, iy);
 
@@ -357,7 +357,7 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     float2 back_pos = float2(ix, iy) - vel * (_dtSwe / _dxSwe);
     int bx = clamp(round(back_pos.x), 0, grid_w - 1);
     int by = clamp(round(back_pos.y), 0, grid_h - 1);
-    float advected_foam = SWE_State_Read[by * grid_w + bx].foam;
+    float advected_foam = _SweState_R[by * grid_w + bx].foam;
 
     float new_foam = advected_foam + crest_foam + shore_foam;
     float foam_decay = exp(-(0.5f + smoothstep(0.05f, 0.0f, new_h) * 20.0f) * _dtSwe); 
@@ -373,7 +373,7 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     nextState.hu = (nextState.h > H_MIN) ? new_hu : 0.0f;
     nextState.hv = (nextState.h > H_MIN) ? new_hv : 0.0f;
     nextState.foam = min(new_foam, 5.0f);
-    SWE_State_Write[index] = nextState;
+    _SweState_W[index] = nextState;
 }
 
 // SWEからAPIC
@@ -386,16 +386,16 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     if (ix >= grid_w || iy >= (int)_SweGridRes.y) return;
 
     uint index = iy * grid_w + ix;
-    SWECell current = SWE_State_Read[index];
+    SWECell current = _SweState_R[index];
 
     int margin = 14; 
     if (ix < margin || ix >= grid_w - margin || iy < margin || iy >= grid_h - margin) {
-        SWE_State_Write[index] = current; return;
+        _SweState_W[index] = current; return;
     }
 
     float h_min = _dxSwe * 0.5f;
     if (current.h <= h_min + 0.1f) {
-        SWE_State_Write[index] = current; return;
+        _SweState_W[index] = current; return;
     }
 
     float speed_sq = current.hu * current.hu + current.hv * current.hv;
@@ -404,7 +404,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     // フルード数で簡易判定して早期リターン
     float fr_sq_threshold = fr_threshold * fr_threshold;
     if (speed_sq < fr_sq_threshold * GRAVITY * current.h) { 
-        SWE_State_Write[index] = current; 
+        _SweState_W[index] = current; 
         return; 
     }
 
@@ -415,7 +415,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         for (int j = -1; j <= 1; j++) {
             int nx = clamp(ix + i, 0, grid_w - 1);
             int ny = clamp(iy + j, 0, grid_w - 1);
-            SWECell n_swe = SWE_State_Read[ny * grid_w + nx];
+            SWECell n_swe = _SweState_R[ny * grid_w + nx];
             float w = (i == 0 && j == 0) ? 0.25f : ((abs(i) + abs(j) == 1) ? 0.125f : 0.0625f);
             smooth_h += n_swe.h * w; smooth_hu += n_swe.hu * w; smooth_hv += n_swe.hv * w; weight_sum += w;
         }
@@ -425,10 +425,10 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     float safe_dx = max(_dxSwe, 0.001f);
     float safe_h = max(smooth_h, 0.001f);
 
-    SWECell cL = SWE_State_Read[iy * grid_w + max(ix - 1, 0)];
-    SWECell cR = SWE_State_Read[iy * grid_w + min(ix + 1, grid_w - 1)];
-    SWECell cD = SWE_State_Read[max(iy - 1, 0) * grid_w + ix];
-    SWECell cU = SWE_State_Read[min(iy + 1, grid_w - 1) * grid_w + ix];
+    SWECell cL = _SweState_R[iy * grid_w + max(ix - 1, 0)];
+    SWECell cR = _SweState_R[iy * grid_w + min(ix + 1, grid_w - 1)];
+    SWECell cD = _SweState_R[max(iy - 1, 0) * grid_w + ix];
+    SWECell cU = _SweState_R[min(iy + 1, grid_w - 1) * grid_w + ix];
 
     float u_c = smooth_hu / safe_h;
     float v_c = smooth_hv / safe_h;
@@ -467,7 +467,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     {
         float conversion_rate = 1.0f - exp(-conversion_rate_multiplier * _dtSwe); 
         float delta_h = (current.h - h_min) * conversion_rate;
-        if (delta_h < 0.05f) { SWE_State_Write[index] = current; return; }
+        if (delta_h < 0.05f) { _SweState_W[index] = current; return; }
 
         float sublimated_mass = delta_h * safe_dx * safe_dx; 
         uint count = (uint)max(1.0f, sublimated_mass);
@@ -476,18 +476,18 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         float mass_per_particle = sublimated_mass / max(1.0f, (float)count);
 
         uint p_len, p_stride;
-        APIC_Particle_Buffer.GetDimensions(p_len, p_stride);
+        _ApicParticle.GetDimensions(p_len, p_stride);
         if (p_len == 0) p_len = 1000000;
         
         uint start_idx;
-        InterlockedAdd(ParticleCounter[0], count, start_idx);
+        InterlockedAdd(_ParticleCounter[0], count, start_idx);
         uint spawned_count = 0;
 
         // 質量保存を満たすように生成すべき粒子数を逆算
         for (uint i = 0; i < count; i++)
         {
             uint p_idx = (start_idx + i) % p_len;
-            if (APIC_Particle_Buffer[p_idx].mass > 0.001f) continue; 
+            if (_ApicParticle[p_idx].mass > 0.001f) continue; 
 
             APICParticle p = (APICParticle)0;
             p.mass = mass_per_particle;
@@ -518,7 +518,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
             p.velocity.z = push_z + (rz * splash_velocity_multiplier) * c_wave; 
             p.c1 = float3(0,0,0); p.c2 = float3(0,0,0); p.c3 = float3(0,0,0);
 
-            APIC_Particle_Buffer[p_idx] = p;
+            _ApicParticle[p_idx] = p;
             spawned_count++;
         }
 
@@ -529,7 +529,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
         current.hu *= remain_ratio;
         current.hv *= remain_ratio;
     }
-    SWE_State_Write[index] = current;
+    _SweState_W[index] = current;
 }
 
 [numthreads(8, 8, 1)]
@@ -537,15 +537,15 @@ void ApplyCondensation (uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= (uint2)_SweGridRes)) return;
     uint index = id.y * _SweGridRes.x + id.x;
 
-    SWECell current = SWE_State_Read[index];
+    SWECell current = _SweState_R[index];
     
     // 整数倍してアトミック加算していたので、ATOMIC_SCALEで割って戻す
-    float delta_h = (float)Delta_H_Buffer[index] / ATOMIC_SCALE;
+    float delta_h = (float)_DeltaHInt[index] / ATOMIC_SCALE;
     current.h  += delta_h;
-    current.hu += (float)Delta_HU_Buffer[index] / ATOMIC_SCALE;
-    current.hv += (float)Delta_HV_Buffer[index] / ATOMIC_SCALE;
+    current.hu += (float)_DeltaHuInt[index] / ATOMIC_SCALE;
+    current.hv += (float)_DeltaHvInt[index] / ATOMIC_SCALE;
 
-    SWE_State_Write[index] = current;
+    _SweState_W[index] = current;
 }
 
 [numthreads(8, 8, 1)]
@@ -553,21 +553,21 @@ void InteractSwe (uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     uint index = id.y * _SweGridRes.x + id.x;
-    SWECell current = SWE_State_Read[index];
+    SWECell current = _SweState_R[index];
 
-    if (mouse_active == 1)
+    if (_MouseActive == 1)
     {
         float2 cell_world_pos = _WorldOffset + float2(id.x, id.y) * _dxSwe;
-        if (distance(cell_world_pos, mouse_pos) < mouse_radius)
+        if (distance(cell_world_pos, _MousePos) < _MouseRadius)
         {
             if (current.h > 0.01f) {
-                current.hu += mouse_dir.x * mouse_force * _dtApic * current.h;
-                current.hv += mouse_dir.y * mouse_force * _dtApic * current.h;
+                current.hu += _MouseDir.x * _MouseForce * _dtApic * current.h;
+                current.hv += _MouseDir.y * _MouseForce * _dtApic * current.h;
             }
         }
     }
 
-    SWE_State_Write[index] = current;
+    _SweState_W[index] = current;
 }
 
 [numthreads(8, 8, 1)]
@@ -584,7 +584,7 @@ void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
     SWECell nextState;
 
     if (src_x >= 0 && src_x < grid_w && src_y >= 0 && src_y < grid_h) {
-    nextState = SWE_State_Read[src_y * grid_w + src_x];
+    nextState = _SweState_R[src_y * grid_w + src_x];
     } else {
         float new_B = GetBedElevation(ix, iy);
         float2 cellWorldPos = _WorldOffset + float2(ix, iy) * _dxSwe;
@@ -596,7 +596,7 @@ void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
         nextState.hv = 0.0f;
         nextState.foam = 0.0f;
     }
-    SWE_State_Write[dst_index] = nextState;
+    _SweState_W[dst_index] = nextState;
 }
 
 [numthreads(8, 8, 1)]
@@ -606,7 +606,7 @@ void ClearIntermediates (uint3 id : SV_DispatchThreadID) {
     uint index = id.y * _SweGridRes.x + id.x;
     
     // 中間バッファを 0 で初期化
-    Delta_H_Buffer[index] = 0;
-    Delta_HU_Buffer[index] = 0;
-    Delta_HV_Buffer[index] = 0;
+    _DeltaHInt[index] = 0;
+    _DeltaHuInt[index] = 0;
+    _DeltaHvInt[index] = 0;
 }

@@ -14,14 +14,10 @@ public partial class SimulationManager
     [SerializeField] private float m_IsoLevelTH = 0.2f; 
     [SerializeField] private int m_McCellsPerApicCell = 2;
     [SerializeField] private float m_FoamSampleRadius = 3.0f;
-    
-    // カーネルキャッシュ
+
     private void InitializeVoxelizer()
     {
-        if (voxelizerCS != null)
-        {
-            voxKernels.Initialize(voxelizerCS);
-        }
+        voxKernels.Initialize(voxelizerCS);
 
         buffers.edgeTable = new ComputeBuffer(256, sizeof(int));
         buffers.edgeTable.SetData(MarchingCubesTables.EdgeTable);
@@ -76,13 +72,13 @@ public partial class SimulationManager
             // Step 13-2: 粒子のスプラッティング (Splat)
             // APIC粒子が持つ質量(密度)と運動量を、描画用の高解像度ボクセルグリッドに焼き付ける
             // =========================================================
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "ActiveParticleList_Read", buffers.activeParticleList);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "ActiveParticleCount", buffers.activeParticleCount);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleList_R", buffers.activeParticleList);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleCount", buffers.activeParticleCount);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_Density", buffers.voxelGrid);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomX", buffers.voxelMomX);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomY", buffers.voxelMomY);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomZ", buffers.voxelMomZ);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "ParticleBuffer", buffers.apicParticle);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ParticleBuffer", buffers.apicParticle);
             voxelizerCS.DispatchIndirect(voxKernels.SplatParticles, buffers.particleDispatchArgs);
 
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
@@ -100,7 +96,7 @@ public partial class SimulationManager
             // =========================================================
             voxelizerCS.SetTexture(voxKernels.SplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(voxKernels.SplatSWE, "VoxelGrid_Density", buffers.voxelGrid);
-            voxelizerCS.SetBuffer(voxKernels.SplatSWE, "SWE_State_Read", buffers.sweStateRead);
+            voxelizerCS.SetBuffer(voxKernels.SplatSWE, "_SweState_R", buffers.sweStateRead);
             voxelizerCS.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
             voxelizerCS.SetFloat("_dxSwe", dxSwe);
             voxelizerCS.Dispatch(voxKernels.SplatSWE, tgVoxelX, tgVoxelY, tgVoxelZ);
@@ -155,7 +151,7 @@ public partial class SimulationManager
             splashMaterial.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
             splashMaterial.SetFloat("_CellSize", currentCellSize);
             splashMaterial.SetFloat("_SpeedThreshold", m_SplashStretchTH);
-            splashMaterial.SetBuffer("APIC_Particle_Buffer", buffers.apicParticle);
+            splashMaterial.SetBuffer("_ApicParticle", buffers.apicParticle);
             splashMaterial.SetVector("_WorldOffset", worldOffset);
 
             if (buffers.voxelFinalDensity != null) {
@@ -176,7 +172,7 @@ public partial class SimulationManager
                 fftOceanMaterial.SetFloat("FFT_Size2", fftOcean.domainSizes[2]);
             }
             if (buffers.sweStateRead != null) {
-                fftOceanMaterial.SetBuffer("SWE_State_Buffer", buffers.sweStateRead);
+                fftOceanMaterial.SetBuffer("_SweState_R", buffers.sweStateRead);
                 fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
                 fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
                 fftOceanMaterial.SetVector("_WorldOffset", worldOffset);
