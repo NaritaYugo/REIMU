@@ -482,7 +482,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
 
             p.position.x = _WorldOffset.x + ((float)id.x + rx) * _dxSwe;
             p.position.y = _WorldOffset.y + ((float)id.y + ry) * _dxSwe;
-            float B_C = GetBedElevation(id);
+            float B_C = GetBedElevation(id.xy);
             float spawn_base_z = B_C + current.h - delta_h; 
             p.position.z = spawn_base_z + rz * delta_h;
 
@@ -565,7 +565,7 @@ void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
     if (src_x >= 0 && src_x < _SweGridRes.x && src_y >= 0 && src_y < _SweGridRes.y) {
     nextState = _SweState_R[src_y * _SweGridRes.x + src_x];
     } else {
-        float new_B = GetBedElevation(id);
+        float new_B = GetBedElevation(id.xy);
         float2 cellWorldPos = _WorldOffset + float2(id.x, id.y) * _dxSwe;
         float3 fft = GetFFTState(cellWorldPos, new_B);
         
