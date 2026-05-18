@@ -55,13 +55,9 @@ inline float  MinMod(float  a, float  b) {return 0.5f * (sign(a) + sign(b)) * mi
 inline float2 MinMod(float2 a, float2 b) {return 0.5f * (sign(a) + sign(b)) * min(abs(a), abs(b));}
 inline float3 MinMod(float3 a, float3 b) {return 0.5f * (sign(a) + sign(b)) * min(abs(a), abs(b));}
 
-float GetBedElevation(int ix, int iy) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y;
-    ix = clamp(ix, 0, grid_w - 1);
-    iy = clamp(iy, 0, grid_h - 1);
-    
-    return TerrainHeightMap.Load(int3(ix, iy, 0)).r;
+float GetBedElevation(int2 id) {
+    id = clamp(id, 0, _SweGridRes - 1);
+    return TerrainHeightMap.Load(int3(id, 0)).r;
 }
 
 float3 GetFFTState(float2 worldPos, float bed_elevation) {
@@ -90,17 +86,14 @@ float3 GetFFTState(float2 worldPos, float bed_elevation) {
 }
 
 float3 GetSWEState(int cx, int cy) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y;
-    
-    if (cx < 0 || cx >= grid_w || cy < 0 || cy >= grid_h) {
+    if (cx < 0 || cx >= _SweGridRes.x || cy < 0 || cy >= _SweGridRes.y) {
         // 境界のセルの状態をそのままコピーして波を逃がす
-        int clamp_x = clamp(cx, 0, grid_w - 1);
-        int clamp_y = clamp(cy, 0, grid_h - 1);
-        SWECell edge_cell = _SweState_R[clamp_y * grid_w + clamp_x];
+        int clamp_x = clamp(cx, 0, _SweGridRes.x - 1);
+        int clamp_y = clamp(cy, 0, _SweGridRes.y - 1);
+        SWECell edge_cell = _SweState_R[clamp_y * _SweGridRes.x + clamp_x];
         return float3(edge_cell.h, edge_cell.hu, edge_cell.hv);
     }
-    SWECell cell = _SweState_R[cy * grid_w + cx];
+    SWECell cell = _SweState_R[cy * _SweGridRes.x + cx];
     return float3(cell.h, cell.hu, cell.hv);
 }
 
@@ -230,13 +223,11 @@ inline void ComputeAxisFlux(
 // ==========================================
 [numthreads(8, 8, 1)]
 void InitSwe(uint3 id : SV_DispatchThreadID) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y;
-    if (id.x >= (uint)grid_w || id.y >= (uint)grid_h) return;
+    if (id.x >= (uint)_SweGridRes.x || id.y >= (uint)_SweGridRes.y) return;
 
-    uint index = id.y * grid_w + id.x;
+    uint index = id.y * _SweGridRes.x + id.x;
 
-    float B_C = GetBedElevation(id.x, id.y);
+    float B_C = GetBedElevation(id.xy);
     float rest_water_level = 0.0f; 
     
     float initial_h = max(rest_water_level - B_C, 0.0f); 
@@ -251,33 +242,29 @@ void InitSwe(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void UpdateSwe (uint3 id : SV_DispatchThreadID) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y; 
-    int ix = (int)id.x;
-    int iy = (int)id.y;
-    if (ix >= grid_w || iy >= grid_h) return;
+    if (id.x >= _SweGridRes.x || id.y >= _SweGridRes.y) return;
 
-    uint index = iy * grid_w + ix;
+    uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = _SweState_R[index];
     float3 U_C = float3(current.h, current.hu, current.hv);
-    float B_C = GetBedElevation(ix, iy);
+    float B_C = GetBedElevation(id.xy);
 
     // 1段隣のセル状態を取得
-    float3 U_L = GetSWEState(ix - 1, iy);
-    float3 U_R = GetSWEState(ix + 1, iy);
-    float3 U_B = GetSWEState(ix, iy - 1);
-    float3 U_T = GetSWEState(ix, iy + 1);
+    float3 U_L = GetSWEState(id.x - 1, id.y);
+    float3 U_R = GetSWEState(id.x + 1, id.y);
+    float3 U_B = GetSWEState(id.x, id.y - 1);
+    float3 U_T = GetSWEState(id.x, id.y + 1);
 
-    float B_L = GetBedElevation(ix - 1, iy);
-    float B_R = GetBedElevation(ix + 1, iy);
-    float B_B = GetBedElevation(ix, iy - 1);
-    float B_T = GetBedElevation(ix, iy + 1);
+    float B_L = GetBedElevation(id.xy - uint2(1,0));
+    float B_R = GetBedElevation(id.xy + uint2(1,0));
+    float B_B = GetBedElevation(id.xy - uint2(0,1));
+    float B_T = GetBedElevation(id.xy + uint2(0,1));
 
     // X方向
     float3 fluxX_right, fluxX_left;
     float source_X;
     ComputeAxisFlux(
-        GetSWEState(ix - 2, iy), U_L, U_C, U_R, GetSWEState(ix + 2, iy),
+        GetSWEState(id.x - 2, id.y), U_L, U_C, U_R, GetSWEState(id.x + 2, id.y),
         B_L, B_C, B_R, fluxX_right, fluxX_left, source_X
     );
 
@@ -285,7 +272,7 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     float3 fluxY_up, fluxY_down;
     float source_Y;
     ComputeAxisFlux(
-        GetSWEState(ix, iy - 2).xzy, U_B.xzy, U_C.xzy, U_T.xzy, GetSWEState(ix, iy + 2).xzy,
+        GetSWEState(id.x, id.y - 2).xzy, U_B.xzy, U_C.xzy, U_T.xzy, GetSWEState(id.x, id.y + 2).xzy,
         B_B, B_C, B_T, fluxY_up, fluxY_down, source_Y
     );
     fluxY_up = fluxY_up.xzy;
@@ -322,8 +309,8 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     }
 
     float sponge_width = 12.0f; 
-    float dist_x = min((float)ix, (float)(grid_w - 1 - ix));
-    float dist_y = min((float)iy, (float)(grid_h - 1 - iy));
+    float dist_x = min((float)id.x, (float)(_SweGridRes.x - 1 - id.x));
+    float dist_y = min((float)id.y, (float)(_SweGridRes.y - 1 - id.y));
     float alpha = smoothstep(0.0f, 1.0f, min(dist_x, dist_y) / sponge_width);
 
     if (alpha < 1.0f) {
@@ -354,10 +341,10 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
     crest_foam *= pow(alpha, 4.0f) * foam_gen_mask; 
     shore_foam *= alpha * foam_gen_mask;
 
-    float2 back_pos = float2(ix, iy) - vel * (_dtSwe / _dxSwe);
-    int bx = clamp(round(back_pos.x), 0, grid_w - 1);
-    int by = clamp(round(back_pos.y), 0, grid_h - 1);
-    float advected_foam = _SweState_R[by * grid_w + bx].foam;
+    float2 back_pos = float2(id.x, id.y) - vel * (_dtSwe / _dxSwe);
+    int bx = clamp(round(back_pos.x), 0, _SweGridRes.x - 1);
+    int by = clamp(round(back_pos.y), 0, _SweGridRes.y - 1);
+    float advected_foam = _SweState_R[by * _SweGridRes.x + bx].foam;
 
     float new_foam = advected_foam + crest_foam + shore_foam;
     float foam_decay = exp(-(0.5f + smoothstep(0.05f, 0.0f, new_h) * 20.0f) * _dtSwe); 
@@ -379,17 +366,13 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
 // SWEからAPIC
 [numthreads(8, 8, 1)]
 void Sublimate (uint3 id : SV_DispatchThreadID) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y;
-    int ix = (int)id.x;
-    int iy = (int)id.y;
-    if (ix >= grid_w || iy >= (int)_SweGridRes.y) return;
+    if (any(id.xy >= _SweGridRes)) return;
 
-    uint index = iy * grid_w + ix;
+    uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = _SweState_R[index];
 
     int margin = 14; 
-    if (ix < margin || ix >= grid_w - margin || iy < margin || iy >= grid_h - margin) {
+    if (any(id.xy < margin) || any(id.xy >= _SweGridRes - margin)) {
         _SweState_W[index] = current; return;
     }
 
@@ -413,9 +396,9 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     for (int i = -1; i <= 1; i++) {
         [unroll]
         for (int j = -1; j <= 1; j++) {
-            int nx = clamp(ix + i, 0, grid_w - 1);
-            int ny = clamp(iy + j, 0, grid_w - 1);
-            SWECell n_swe = _SweState_R[ny * grid_w + nx];
+            int nx = clamp(id.x + i, 0, _SweGridRes.x - 1);
+            int ny = clamp(id.y + j, 0, _SweGridRes.x - 1);
+            SWECell n_swe = _SweState_R[ny * _SweGridRes.x + nx];
             float w = (i == 0 && j == 0) ? 0.25f : ((abs(i) + abs(j) == 1) ? 0.125f : 0.0625f);
             smooth_h += n_swe.h * w; smooth_hu += n_swe.hu * w; smooth_hv += n_swe.hv * w; weight_sum += w;
         }
@@ -425,19 +408,19 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
     float safe_dx = max(_dxSwe, 0.001f);
     float safe_h = max(smooth_h, 0.001f);
 
-    SWECell cL = _SweState_R[iy * grid_w + max(ix - 1, 0)];
-    SWECell cR = _SweState_R[iy * grid_w + min(ix + 1, grid_w - 1)];
-    SWECell cD = _SweState_R[max(iy - 1, 0) * grid_w + ix];
-    SWECell cU = _SweState_R[min(iy + 1, grid_w - 1) * grid_w + ix];
+    SWECell cL = _SweState_R[id.y * _SweGridRes.x + max(id.x - 1, 0)];
+    SWECell cR = _SweState_R[id.y * _SweGridRes.x + min(id.x + 1, _SweGridRes.x - 1)];
+    SWECell cD = _SweState_R[max(id.y - 1, 0) * _SweGridRes.x + id.x];
+    SWECell cU = _SweState_R[min(id.y + 1, _SweGridRes.x - 1) * _SweGridRes.x + id.x];
 
     float u_c = smooth_hu / safe_h;
     float v_c = smooth_hv / safe_h;
 
-    float B_L = GetBedElevation(max(ix - 1, 0), iy);
-    float B_R = GetBedElevation(min(ix + 1, grid_w - 1), iy);
-    float B_D = GetBedElevation(ix, max(iy - 1, 0));
-    float B_U = GetBedElevation(ix, min(iy + 1, grid_h - 1));
-    float B_C = GetBedElevation(ix, iy);
+    float B_L = GetBedElevation(max(id.xy - uint2(1, 0), 0));
+    float B_R = GetBedElevation(min(id.xy + uint2(1, 0), _SweGridRes - 1));
+    float B_D = GetBedElevation(max(id.xy - uint2(0, 1), 0));
+    float B_U = GetBedElevation(min(id.xy + uint2(0, 1), _SweGridRes - 1));
+    float B_C = GetBedElevation(id.xy);
 
     float Eta_L = cL.h + B_L;
     float Eta_R = cR.h + B_R;
@@ -493,13 +476,13 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
             p.mass = mass_per_particle;
             p.age = 0.0f;
 
-            float rx = frac(sin((ix + i) * 12.9898f + iy * 78.233f) * 43758.5453f);
-            float ry = frac(sin(ix * 93.989f  + (iy + i) * 67.345f) * 43758.5453f);
-            float rz = frac(sin((ix * iy) * 45.123f + i * 13.567f) * 43758.5453f);
+            float rx = frac(sin((id.x + i) * 12.9898f + id.y * 78.233f) * 43758.5453f);
+            float ry = frac(sin(id.x * 93.989f  + (id.y + i) * 67.345f) * 43758.5453f);
+            float rz = frac(sin((id.x * id.y) * 45.123f + i * 13.567f) * 43758.5453f);
 
-            p.position.x = _WorldOffset.x + ((float)ix + rx) * _dxSwe;
-            p.position.y = _WorldOffset.y + ((float)iy + ry) * _dxSwe;
-            float B_C = GetBedElevation(ix, iy);
+            p.position.x = _WorldOffset.x + ((float)id.x + rx) * _dxSwe;
+            p.position.y = _WorldOffset.y + ((float)id.y + ry) * _dxSwe;
+            float B_C = GetBedElevation(id);
             float spawn_base_z = B_C + current.h - delta_h; 
             p.position.z = spawn_base_z + rz * delta_h;
 
@@ -572,22 +555,18 @@ void InteractSwe (uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
-    int grid_w = (int)_SweGridRes.x;
-    int grid_h = (int)_SweGridRes.y;
-    int ix = (int)id.x;
-    int iy = (int)id.y;
-    if (ix >= grid_w || iy >= grid_h) return;
+    if (id.x >= _SweGridRes.x || id.y >= _SweGridRes.y) return;
 
-    int src_x = ix + shift_amount.x;
-    int src_y = iy + shift_amount.y;
-    uint dst_index = iy * grid_w + ix;
+    int src_x = id.x + shift_amount.x;
+    int src_y = id.y + shift_amount.y;
+    uint dst_index = id.y * _SweGridRes.x + id.x;
     SWECell nextState;
 
-    if (src_x >= 0 && src_x < grid_w && src_y >= 0 && src_y < grid_h) {
-    nextState = _SweState_R[src_y * grid_w + src_x];
+    if (src_x >= 0 && src_x < _SweGridRes.x && src_y >= 0 && src_y < _SweGridRes.y) {
+    nextState = _SweState_R[src_y * _SweGridRes.x + src_x];
     } else {
-        float new_B = GetBedElevation(ix, iy);
-        float2 cellWorldPos = _WorldOffset + float2(ix, iy) * _dxSwe;
+        float new_B = GetBedElevation(id);
+        float2 cellWorldPos = _WorldOffset + float2(id.x, id.y) * _dxSwe;
         float3 fft = GetFFTState(cellWorldPos, new_B);
         
         // 陸地に入った場合は H_MIN ではなく 0.0f にする
@@ -604,8 +583,6 @@ void ClearIntermediates (uint3 id : SV_DispatchThreadID) {
     if (any(id.xy >= (uint2)_SweGridRes)) return;
     
     uint index = id.y * _SweGridRes.x + id.x;
-    
-    // 中間バッファを 0 で初期化
     _DeltaHInt[index] = 0;
     _DeltaHuInt[index] = 0;
     _DeltaHvInt[index] = 0;
