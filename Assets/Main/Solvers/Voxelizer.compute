@@ -35,6 +35,7 @@ RWStructuredBuffer<float> _VoxelFinalDensity;
 AppendStructuredBuffer<Triangle> _TriangleBuffer;
 StructuredBuffer<int> _EdgeTable;
 StructuredBuffer<int> _TriTable;
+StructuredBuffer<int2> _EdgeToVertexTable;
 StructuredBuffer<uint> _ActiveParticleList_R;
 ByteAddressBuffer _ActiveParticleCount;
 
@@ -316,7 +317,7 @@ float GetAeration(float3 pos_zup, float radius) {
 // ==========================================
 // マーチングキューブ
 // ==========================================
-[numthreads(8,8,8)]
+[numthreads(4,4,4)]
 void MarchingCubes(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)(_GridSize - 1))) return;
 
@@ -347,36 +348,27 @@ void MarchingCubes(uint3 id : SV_DispatchThreadID) {
     p[4] += voxel_origin; p[5] += voxel_origin;
     p[6] += voxel_origin; p[7] += voxel_origin;
 
-    float3 vertList[12];
-    if (edges & 1) vertList[0] = VertexInterp(_IsoLevel, p[0], p[1], val[0], val[1]);
-    if (edges & 2) vertList[1] = VertexInterp(_IsoLevel, p[1], p[2], val[1], val[2]);
-    if (edges & 4) vertList[2] = VertexInterp(_IsoLevel, p[2], p[3], val[2], val[3]);
-    if (edges & 8) vertList[3] = VertexInterp(_IsoLevel, p[3], p[0], val[3], val[0]);
-    if (edges & 16) vertList[4] = VertexInterp(_IsoLevel, p[4], p[5], val[4], val[5]);
-    if (edges & 32) vertList[5] = VertexInterp(_IsoLevel, p[5], p[6], val[5], val[6]);
-    if (edges & 64) vertList[6] = VertexInterp(_IsoLevel, p[6], p[7], val[6], val[7]);
-    if (edges & 128) vertList[7] = VertexInterp(_IsoLevel, p[7], p[4], val[7], val[4]);
-    if (edges & 256) vertList[8] = VertexInterp(_IsoLevel, p[0], p[4], val[0], val[4]);
-    if (edges & 512) vertList[9] = VertexInterp(_IsoLevel, p[1], p[5], val[1], val[5]);
-    if (edges & 1024) vertList[10] = VertexInterp(_IsoLevel, p[2], p[6], val[2], val[6]);
-    if (edges & 2048) vertList[11] = VertexInterp(_IsoLevel, p[3], p[7], val[3], val[7]);
-    
     float3 velocity = GetVelocity(id);
-
     for (int i = 0; _TriTable[cubeIndex * 16 + i] != -1; i += 3) {
-        Triangle tri;
-        
-        float3 v0_zup = vertList[_TriTable[cubeIndex * 16 + i]];
-        float3 v1_zup = vertList[_TriTable[cubeIndex * 16 + i + 1]];
-        float3 v2_zup = vertList[_TriTable[cubeIndex * 16 + i + 2]];
+        // LUTで頂点を取得し、必要な部分のみ計算
+        int edge0 = _TriTable[cubeIndex * 16 + i];
+        int edge1 = _TriTable[cubeIndex * 16 + i + 1];
+        int edge2 = _TriTable[cubeIndex * 16 + i + 2];
 
+        int2 ev0 = _EdgeToVertexTable[edge0];
+        int2 ev1 = _EdgeToVertexTable[edge1];
+        int2 ev2 = _EdgeToVertexTable[edge2];
+        
+        float3 v0_zup = VertexInterp(_IsoLevel, p[ev0.x], p[ev0.y], val[ev0.x], val[ev0.y]);
+        float3 v1_zup = VertexInterp(_IsoLevel, p[ev1.x], p[ev1.y], val[ev1.x], val[ev1.y]);
+        float3 v2_zup = VertexInterp(_IsoLevel, p[ev2.x], p[ev2.y], val[ev2.x], val[ev2.y]);
+
+        Triangle tri;
         tri.v0 = float3(v0_zup.x, v0_zup.z, v0_zup.y);
         tri.v1 = float3(v1_zup.x, v1_zup.z, v1_zup.y);
         tri.v2 = float3(v2_zup.x, v2_zup.z, v2_zup.y);
-        
-        float3 edge1 = tri.v1 - tri.v0;
-        float3 edge2 = tri.v2 - tri.v0;
-        tri.norm = normalize(cross(edge1, edge2)); 
+
+        tri.norm = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0)); 
 
         float r = 2.0f * _CellSize; 
         float aeration0 = GetAeration(v0_zup, r);

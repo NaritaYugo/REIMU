@@ -242,7 +242,7 @@ void InitSwe(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void UpdateSwe (uint3 id : SV_DispatchThreadID) {
-    if (id.x >= _SweGridRes.x || id.y >= _SweGridRes.y) return;
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = _SweState_R[index];
@@ -366,13 +366,13 @@ void UpdateSwe (uint3 id : SV_DispatchThreadID) {
 // SWEからAPIC
 [numthreads(8, 8, 1)]
 void Sublimate (uint3 id : SV_DispatchThreadID) {
-    if (any(id.xy >= _SweGridRes)) return;
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     uint index = id.y * _SweGridRes.x + id.x;
     SWECell current = _SweState_R[index];
 
-    int margin = 14; 
-    if (any(id.xy < margin) || any(id.xy >= _SweGridRes - margin)) {
+    uint margin = 14; 
+    if (any(id.xy < margin) || any(id.xy >= (uint2)_SweGridRes - margin)) {
         _SweState_W[index] = current; return;
     }
 
@@ -491,7 +491,7 @@ void Sublimate (uint3 id : SV_DispatchThreadID) {
             if (flow_speed > 0.001f) flow_dir /= flow_speed;
             else flow_dir = float2(0.0f, 0.0f);
 
-            // 連続の式を利用して鉛直速度を計算
+            // 連続の式を援用して鉛直速度を計算
             float c_wave = sqrt(9.81f * safe_h);
             float curl_boost = c_wave * 0.8f; 
             float push_z = clamp(max(0.0f, -laplacian_Eta) * push_z_multiplier, 0.0f, c_wave);
@@ -555,7 +555,7 @@ void InteractSwe (uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8, 8, 1)]
 void ShiftSweGrid(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= _SweGridRes.x || id.y >= _SweGridRes.y) return;
+    if (any(id.xy >= (uint2)_SweGridRes)) return;
 
     int src_x = id.x + shift_amount.x;
     int src_y = id.y + shift_amount.y;

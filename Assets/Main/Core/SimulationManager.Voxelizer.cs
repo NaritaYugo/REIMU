@@ -38,6 +38,16 @@ public partial class SimulationManager
         buffers.voxelBlurA = new ComputeBuffer(totalVoxels, sizeof(float));
         buffers.voxelBlurB = new ComputeBuffer(totalVoxels, sizeof(float));
         buffers.voxelFinalDensity = new ComputeBuffer(totalVoxels, sizeof(float));
+
+        buffers.edgeToVertexTable = new ComputeBuffer(12, sizeof(int) * 2);
+        // エッジ番号から頂点番号を引くLUT
+        Vector2Int[] edgeToVertexData = new Vector2Int[12]
+        {
+            new(0, 1), new(1, 2), new(2, 3), new(3, 0),
+            new(4, 5), new(5, 6), new(6, 7), new(7, 4),
+            new(0, 4), new(1, 5), new(2, 6), new(3, 7)
+        };
+        buffers.edgeToVertexTable.SetData(edgeToVertexData);
     }
 
     private void DispatchAndRenderVoxelizer()
@@ -48,6 +58,10 @@ public partial class SimulationManager
         int tgVoxelX = (gridX + 7) / 8;
         int tgVoxelY = (gridY + 7) / 8;
         int tgVoxelZ = (gridZ + 7) / 8;
+        // 重いのでマーチングキューブはスレッド数を[4,4,4]に減らす
+        int tgMarchingX = (gridX + 3) / 4;
+        int tgMarchingY = (gridY + 3) / 4;
+        int tgMarchingZ = (gridZ + 3) / 4;
         float currentCellSize = dxApic / m_McCellsPerApicCell;
 
         if (voxelizerCS != null) {
@@ -129,7 +143,8 @@ public partial class SimulationManager
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_TriangleBuffer", buffers.triangle);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_EdgeTable", buffers.edgeTable);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_TriTable", buffers.triTable);
-            voxelizerCS.Dispatch(voxKernels.MarchingCubes, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_EdgeToVertexTable", buffers.edgeToVertexTable);
+            voxelizerCS.Dispatch(voxKernels.MarchingCubes, tgMarchingX, tgMarchingY, tgMarchingZ);
 
             ComputeBuffer.CopyCount(buffers.triangle, buffers.drawArgs, 4);
         }

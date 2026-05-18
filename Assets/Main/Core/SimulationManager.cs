@@ -59,7 +59,7 @@ public partial class SimulationManager : MonoBehaviour
         public ComputeBuffer activeParticleList, activeParticleCount, particleDispatchArgs;
 
         // ボクセル化
-        public ComputeBuffer voxelGrid, voxelMomX, voxelMomY, voxelMomZ, 
+        public ComputeBuffer voxelGrid, voxelMomX, voxelMomY, voxelMomZ, edgeToVertexTable, 
             triangle, drawArgs, triTable, edgeTable, voxelBlurA, voxelBlurB, voxelFinalDensity;
 
         public void ReleaseAll()
