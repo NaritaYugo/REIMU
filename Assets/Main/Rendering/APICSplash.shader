@@ -14,7 +14,6 @@ Shader "APICSplash"
     {
         Tags { "RenderType"="Transparent" "Queue"="Transparent" "RenderPipeline"="UniversalPipeline" }
 
-        // 加算＋アルファブレンド (発光しつつ透明度を持つ)
         Blend One OneMinusSrcAlpha
         ZWrite Off  
         ZTest LEqual
@@ -28,7 +27,6 @@ Shader "APICSplash"
             #pragma target 5.0
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            // ComputeShader非対応の命令を避けるため、構造体はここで個別定義する
             struct APICParticle {
                 float3 position; float mass; float3 velocity; float age;
                 float3 c1; float pad_c1; float3 c2; float pad_c2; float3 c3; float pad_c3;
@@ -54,18 +52,12 @@ Shader "APICSplash"
                 float sparkle : TEXCOORD1; 
             };
 
-            // ==========================================================
-            // 頂点シェーダー (Vertex Shader)
-            // APICParticleBufferから情報を取り出し、カメラに向けたビルボード(ひし形)を生成する
-            // ==========================================================
             v2f vert (uint vertexID : SV_VertexID) {
                 v2f o;
                 
                 uint particleIndex = vertexID / 6;
                 uint cornerIndex = vertexID % 6;
 
-                // --- 1. ボクセル密度によるカリング判定 ---
-                // ボクセル内部（水の中）にある飛沫を描画しないように、自身の位置の密度を取得する
                 APICParticle p = APIC_Particle_Buffer[particleIndex];
                 
                 float3 origin_zup = _ApicWorldOffset;
@@ -75,15 +67,8 @@ Shader "APICSplash"
                 int3 idx_zup = (int3)round(localPos_zup / _CellSize);
 
                 float density = 0.0;
-                int gx = (int)_GridSize.x;
-                int gy = (int)_GridSize.y;
-                int gz = (int)_GridSize.z;
-
-                if (idx_zup.x >= 0 && idx_zup.x < gx &&
-                    idx_zup.y >= 0 && idx_zup.y < gy &&
-                    idx_zup.z >= 0 && idx_zup.z < gz) {
-                    
-                    int flatIdx = idx_zup.x + idx_zup.y * gx + idx_zup.z * gx * gy;
+                if (all(idx_zup >= 0) && all(idx_zup < _GridSize)) {
+                    int flatIdx = idx_zup.x + idx_zup.y * _GridSize.x + idx_zup.z * _GridSize.x * _GridSize.yy;
                     density = VoxelGrid_FinalDensity[flatIdx];
                 }
 
@@ -91,7 +76,6 @@ Shader "APICSplash"
                 float3 unityVel = float3(p.velocity.x, p.velocity.z, p.velocity.y);
                 float speed_particle = length(unityVel);
                 
-                // 密度が閾値以下(ボクセルの外) かつ 速度が一定以上の場合のみ飛沫として描画
                 bool isSplash = (density < _IsoLevel * 0.8f) && (speed_particle > _SpeedThreshold);
 
                 if (p.mass <= 0.0f || !isSplash) {
@@ -101,7 +85,6 @@ Shader "APICSplash"
                     return o;
                 }
 
-                // --- 2. サイズと発光(Sparkle)の計算 ---
                 float densityRatio = saturate(density / max(_IsoLevel * 0.8f, 0.001f));
                 float halfSize = lerp(_MinSize, _MaxSize, densityRatio);
 
@@ -117,7 +100,6 @@ Shader "APICSplash"
                 }
                 o.sparkle = sparkleAmount;
 
-                // --- 3. ビルボードの生成と引き伸ばし (Motion Blur) ---
                 float2 uvArray[6] = {
                     float2(-1, -1), float2( 1, -1), float2(-1,  1), 
                     float2(-1,  1), float2( 1, -1), float2(  1,  1)  
@@ -140,19 +122,14 @@ Shader "APICSplash"
                 return o;
             }
 
-            // ==========================================================
-            // フラグメントシェーダー (Fragment Shader)
-            // ==========================================================
             float4 frag (v2f i) : SV_Target
             {
-                // 45度回転した正方形（ひし形）の生成
                 float shape = abs(i.uv.x) + abs(i.uv.y);
                 if (shape > 1.0f) discard;
 
                 float finalAlpha = i.sparkle;
                 float3 finalColor = _SplashColor.rgb * i.sparkle * 15.0f;
 
-                // Blend One OneMinusSrcAlpha に合わせて、色にAlphaを乗算して出力
                 return float4(finalColor * finalAlpha, finalAlpha); 
             }
             ENDHLSL

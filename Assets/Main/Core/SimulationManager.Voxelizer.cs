@@ -74,8 +74,7 @@ public partial class SimulationManager
             voxelizerCS.Dispatch(voxKernels.ClearVoxelGrid, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
-            // Step 13-2: 粒子のスプラッティング (Splat)
-            // APIC粒子が持つ質量(密度)と運動量を、描画用の高解像度ボクセルグリッドに焼き付ける
+            // Step 13-2: APICのスプラッテング
             // =========================================================
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleList_R", buffers.activeParticleList);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleCount", buffers.activeParticleCount);
@@ -96,8 +95,7 @@ public partial class SimulationManager
             }
 
             // =========================================================
-            // Step 13-3: SWE層のスプラッティング
-            // APICボクセルとSWE/FFTの境界が不自然に切れないよう、SWEの水面も密度として加算する
+            // Step 13-3: SWEのスプラッティング
             // =========================================================
             voxelizerCS.SetTexture(voxKernels.SplatSWE, "TerrainHeightMap", terrainHeightMap);
             voxelizerCS.SetBuffer(voxKernels.SplatSWE, "_VoxelDensity", buffers.voxelGrid);
@@ -107,8 +105,7 @@ public partial class SimulationManager
             voxelizerCS.Dispatch(voxKernels.SplatSWE, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
-            // Step 13-4: 密度のブラー処理 (XYZ 3パス)
-            // 少し離れた位置の密度をサンプリングできるよう、グリッド全体にぼかしをかける
+            // Step 13-4: 密度のブラー処理
             // =========================================================
             voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelDensity", buffers.voxelGrid);
             voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelBlurA", buffers.voxelBlurA);
@@ -123,8 +120,7 @@ public partial class SimulationManager
             voxelizerCS.Dispatch(voxKernels.BlurZ, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
-            // Step 13-5: マーチングキューブ (Marching Cubes)
-            // スカラー場（密度グリッド）から等値面（IsoLevel）を抽出し、ポリゴン(Triangle)を生成する
+            // Step 13-5: マーチングキューブ
             // =========================================================
             buffers.triangle.SetCounterValue(0); 
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelDensity", buffers.voxelGrid);
@@ -142,17 +138,16 @@ public partial class SimulationManager
         }
 
         // =========================================================
-        // Step 14: プロシージャル描画 (Graphics.DrawProcedural)
-        // CPUを介さず、GPU上のバッファから直接メッシュを描画する
+        // Step 14: プロシージャル描画
         // =========================================================
 
-        // 1. APIC流体本体のメッシュ描画
+        // APIC流体本体のメッシュ描画
         if (fluidMeshMaterial != null) {
             fluidMeshMaterial.SetBuffer("TriangleBuffer", buffers.triangle);
             Graphics.DrawProceduralIndirect(fluidMeshMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, buffers.drawArgs, 0);
         }
 
-        // 2. 飛沫（スプラッシュ）のビルボード描画
+        // 飛沫（スプラッシュ）のビルボード描画
         if (splashMaterial != null && buffers.apicParticle != null) {
             splashMaterial.SetVector("_GridSize", new Vector4(voxelGridRes.x, voxelGridRes.y, voxelGridRes.z, 0));
             splashMaterial.SetFloat("_CellSize", currentCellSize);
@@ -167,7 +162,7 @@ public partial class SimulationManager
             Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, m_MaxParticles * 6, 1);
         }
 
-        // 3. SWEとFFTの描画
+        // SWEとFFTの描画
         if (fftOceanMaterial != null) {
             if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
                 fftOceanMaterial.SetTexture("FFT_DispLOD0", fftOcean.displacementMaps[0]);
@@ -179,12 +174,12 @@ public partial class SimulationManager
             }
             if (buffers.sweStateRead != null) {
                 fftOceanMaterial.SetBuffer("_SweState_R", buffers.sweStateRead);
-                fftOceanMaterial.SetFloat("_swe_width", sweGridRes.x);
+                fftOceanMaterial.SetFloat("_SweWidth", sweGridRes.x);
                 fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
                 fftOceanMaterial.SetVector("_WorldOffset", worldOffset);
             }
             if (buffers.voxelFinalDensity != null) {
-                fftOceanMaterial.SetBuffer("VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
+                fftOceanMaterial.SetBuffer("_VoxelFinalDensity", buffers.voxelFinalDensity);
                 fftOceanMaterial.SetFloat("_IsoLevel", m_IsoLevelTH);
             }
             if (terrainHeightMap != null) {
