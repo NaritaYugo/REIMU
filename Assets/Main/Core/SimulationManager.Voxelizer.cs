@@ -23,10 +23,8 @@ public partial class SimulationManager
         buffers.triTable = new ComputeBuffer(4096, sizeof(int));
         buffers.triTable.SetData(MarchingCubesTables.TriTable);
 
-        int gridX = apicGridRes.x * m_McCellsPerApicCell;
-        int gridY = apicGridRes.y * m_McCellsPerApicCell; 
-        int gridZ = apicGridRes.z * m_McCellsPerApicCell;
-        int totalVoxels = gridX * gridY * gridZ;
+        Vector3Int voxelGridRes = apicGridRes * m_McCellsPerApicCell;
+        int totalVoxels = voxelGridRes.x * voxelGridRes.y * voxelGridRes.z;
 
         buffers.voxelGrid = new ComputeBuffer(totalVoxels, sizeof(int));
         buffers.voxelMomX = new ComputeBuffer(totalVoxels, sizeof(int));
@@ -52,21 +50,15 @@ public partial class SimulationManager
 
     private void DispatchAndRenderVoxelizer()
     {
-        int gridX = apicGridRes.x * m_McCellsPerApicCell;
-        int gridY = apicGridRes.y * m_McCellsPerApicCell; 
-        int gridZ = apicGridRes.z * m_McCellsPerApicCell;
-        int tgVoxelX = (gridX + 7) / 8;
-        int tgVoxelY = (gridY + 7) / 8;
-        int tgVoxelZ = (gridZ + 7) / 8;
-        // 重いのでマーチングキューブはスレッド数を[4,4,4]に減らす
-        int tgMarchingX = (gridX + 3) / 4;
-        int tgMarchingY = (gridY + 3) / 4;
-        int tgMarchingZ = (gridZ + 3) / 4;
+        Vector3Int voxelGridRes = apicGridRes * m_McCellsPerApicCell;
+        Vector3Int tgVoxel = (voxelGridRes + new Vector3Int(7,7,7)) / 8;
+        Vector3Int tgMarching = (voxelGridRes + new Vector3Int(3,3,3)) / 4;
+
         float currentCellSize = dxApic / m_McCellsPerApicCell;
 
         if (voxelizerCS != null) {
             voxelizerCS.SetVector("_WorldOffset", worldOffset);
-            voxelizerCS.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
+            voxelizerCS.SetVector("_GridSize", new Vector4(voxelGridRes.x, voxelGridRes.y, voxelGridRes.z, 0));
             voxelizerCS.SetFloat("_CellSize", currentCellSize);        
             voxelizerCS.SetFloat("_ParticleRadius", m_McParticleRadius);  
             voxelizerCS.SetFloat("_IsoLevel", m_IsoLevelTH);   
@@ -79,7 +71,7 @@ public partial class SimulationManager
             voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomX", buffers.voxelMomX);
             voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomY", buffers.voxelMomY);
             voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomZ", buffers.voxelMomZ);
-            voxelizerCS.Dispatch(voxKernels.ClearVoxelGrid, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.Dispatch(voxKernels.ClearVoxelGrid, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
             // Step 13-2: 粒子のスプラッティング (Splat)
@@ -112,7 +104,7 @@ public partial class SimulationManager
             voxelizerCS.SetBuffer(voxKernels.SplatSWE, "_SweState_R", buffers.sweStateRead);
             voxelizerCS.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
             voxelizerCS.SetFloat("_dxSwe", dxSwe);
-            voxelizerCS.Dispatch(voxKernels.SplatSWE, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.Dispatch(voxKernels.SplatSWE, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
             // Step 13-4: 密度のブラー処理 (XYZ 3パス)
@@ -120,15 +112,15 @@ public partial class SimulationManager
             // =========================================================
             voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelDensity", buffers.voxelGrid);
             voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelBlurA", buffers.voxelBlurA);
-            voxelizerCS.Dispatch(voxKernels.BlurX, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.Dispatch(voxKernels.BlurX, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             voxelizerCS.SetBuffer(voxKernels.BlurY, "_VoxelBlurA", buffers.voxelBlurA);
             voxelizerCS.SetBuffer(voxKernels.BlurY, "_VoxelBlurB", buffers.voxelBlurB);
-            voxelizerCS.Dispatch(voxKernels.BlurY, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.Dispatch(voxKernels.BlurY, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             voxelizerCS.SetBuffer(voxKernels.BlurZ, "_VoxelBlurB", buffers.voxelBlurB);
             voxelizerCS.SetBuffer(voxKernels.BlurZ, "_VoxelFinalDensity", buffers.voxelFinalDensity);
-            voxelizerCS.Dispatch(voxKernels.BlurZ, tgVoxelX, tgVoxelY, tgVoxelZ);
+            voxelizerCS.Dispatch(voxKernels.BlurZ, tgVoxel.x, tgVoxel.y, tgVoxel.z);
 
             // =========================================================
             // Step 13-5: マーチングキューブ (Marching Cubes)
@@ -144,7 +136,7 @@ public partial class SimulationManager
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_EdgeTable", buffers.edgeTable);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_TriTable", buffers.triTable);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_EdgeToVertexTable", buffers.edgeToVertexTable);
-            voxelizerCS.Dispatch(voxKernels.MarchingCubes, tgMarchingX, tgMarchingY, tgMarchingZ);
+            voxelizerCS.Dispatch(voxKernels.MarchingCubes, tgMarching.x, tgMarching.y, tgMarching.z);
 
             ComputeBuffer.CopyCount(buffers.triangle, buffers.drawArgs, 4);
         }
@@ -162,7 +154,7 @@ public partial class SimulationManager
 
         // 2. 飛沫（スプラッシュ）のビルボード描画
         if (splashMaterial != null && buffers.apicParticle != null) {
-            splashMaterial.SetVector("_GridSize", new Vector4(gridX, gridY, gridZ, 0));
+            splashMaterial.SetVector("_GridSize", new Vector4(voxelGridRes.x, voxelGridRes.y, voxelGridRes.z, 0));
             splashMaterial.SetFloat("_CellSize", currentCellSize);
             splashMaterial.SetFloat("_SpeedThreshold", m_SplashStretchTH);
             splashMaterial.SetBuffer("_ApicParticle", buffers.apicParticle);

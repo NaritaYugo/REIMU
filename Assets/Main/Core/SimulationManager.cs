@@ -267,11 +267,8 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetInt("_MouseActive", mouseActive);
 
         // --- スレッドグループ数の計算 ---
-        int tgSWE_X = (sweGridRes.x + 7) / 8;
-        int tgSWE_Y = (sweGridRes.y + 7) / 8;
-        int tgAPIC_X = (apicGridRes.x + 7) / 8;
-        int tgAPIC_Y = (apicGridRes.z + 7) / 8;  
-        int tgAPIC_Z = (apicGridRes.y + 7) / 8; 
+        Vector2Int tgSwe = (sweGridRes + new Vector2Int(7,7)) / 8;
+        Vector3Int tgApic = (apicGridRes + new Vector3Int(7,7,7)) / 8;
         int tgParticles = (m_MaxParticles + 63) / 64;
 
         if (fftOcean != null && fftOcean.displacementMaps.Length >= 3) {
@@ -289,7 +286,7 @@ public partial class SimulationManager : MonoBehaviour
         // =========================================================
         // Step 1: バッファの初期化・クリア
         // =========================================================
-        sweCS.Dispatch(sweKernels.ClearIntermediates, tgSWE_X, tgSWE_Y, 1);
+        sweCS.Dispatch(sweKernels.ClearIntermediates, tgSwe.x, tgSwe.y, 1);
         
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicMassInt", buffers.apicGridMass);
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntX", buffers.apicGridVelX);
@@ -297,7 +294,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicVelIntZ", buffers.apicGridVelZ);
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicDivergence", buffers.apicDivergence);
         apicCS.SetBuffer(apicKernels.ClearApicGrid, "_ApicPressure_W", buffers.apicPressureWrite);
-        apicCS.Dispatch(apicKernels.ClearApicGrid, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.ClearApicGrid, tgApic.x, tgApic.y, tgApic.z);
 
         // =========================================================
         // Step 2: 生存粒子のリスト構築と間接ディスパッチ(DispatchIndirect)の準備
@@ -349,13 +346,13 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetBuffer(sweKernels.ApplyCondensation, "_DeltaHInt", buffers.deltaH);
         sweCS.SetBuffer(sweKernels.ApplyCondensation, "_DeltaHuInt", buffers.deltaHu);
         sweCS.SetBuffer(sweKernels.ApplyCondensation, "_DeltaHvInt", buffers.deltaHv);
-        sweCS.Dispatch(sweKernels.ApplyCondensation, tgSWE_X, tgSWE_Y, 1);
+        sweCS.Dispatch(sweKernels.ApplyCondensation, tgSwe.x, tgSwe.y, 1);
         SwapSWEBuffers();
 
         if (mouseActive == 1) {
             sweCS.SetBuffer(sweKernels.InteractSwe, "_SweState_R", buffers.sweStateRead);
             sweCS.SetBuffer(sweKernels.InteractSwe, "_SweState_W", buffers.sweStateWrite);
-            sweCS.Dispatch(sweKernels.InteractSwe, tgSWE_X, tgSWE_Y, 1);
+            sweCS.Dispatch(sweKernels.InteractSwe, tgSwe.x, tgSwe.y, 1);
             SwapSWEBuffers();
         }
 
@@ -377,7 +374,7 @@ public partial class SimulationManager : MonoBehaviour
         for (int i = 0; i < subSteps; i++) {
             sweCS.SetBuffer(sweKernels.UpdateSwe, "_SweState_R", buffers.sweStateRead);
             sweCS.SetBuffer(sweKernels.UpdateSwe, "_SweState_W", buffers.sweStateWrite);
-            sweCS.Dispatch(sweKernels.UpdateSwe, tgSWE_X, tgSWE_Y, 1);
+            sweCS.Dispatch(sweKernels.UpdateSwe, tgSwe.x, tgSwe.y, 1);
             SwapSWEBuffers();
         }
 
@@ -396,7 +393,7 @@ public partial class SimulationManager : MonoBehaviour
         sweCS.SetBuffer(sweKernels.Sublimate, "_SweState_W", buffers.sweStateWrite);
         sweCS.SetBuffer(sweKernels.Sublimate, "_ApicParticle", buffers.apicParticle);
         sweCS.SetBuffer(sweKernels.Sublimate, "_ParticleCounter", buffers.particleCounter);
-        sweCS.Dispatch(sweKernels.Sublimate, tgSWE_X, tgSWE_Y, 1);
+        sweCS.Dispatch(sweKernels.Sublimate, tgSwe.x, tgSwe.y, 1);
         SwapSWEBuffers();
 
         // =========================================================
@@ -420,7 +417,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntX", buffers.apicGridVelX);
         apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntY", buffers.apicGridVelY);
         apicCS.SetBuffer(apicKernels.NormalizeVel, "_ApicVelIntZ", buffers.apicGridVelZ);
-        apicCS.Dispatch(apicKernels.NormalizeVel, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.NormalizeVel, tgApic.x, tgApic.y, tgApic.z);
 
         apicCS.SetTexture(apicKernels.Divergence, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(apicKernels.Divergence, "_ApicVelIntX", buffers.apicGridVelX);
@@ -429,7 +426,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.Divergence, "_ApicDivergence", buffers.apicDivergence);
         apicCS.SetBuffer(apicKernels.Divergence, "_ApicMassInt", buffers.apicGridMass);
         apicCS.SetBuffer(apicKernels.Divergence, "_SweState_R", buffers.sweStateRead);
-        apicCS.Dispatch(apicKernels.Divergence, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.Divergence, tgApic.x, tgApic.y, tgApic.z);
 
         // =========================================================
         // Step 10: APIC 圧力計算(Jacobi-PCG法)の初期化
@@ -439,7 +436,7 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.BuildDiag, "_PcgPrecon", buffers.pcgPrecon);
         apicCS.SetTexture(apicKernels.BuildDiag, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(apicKernels.BuildDiag, "_SweState_R", buffers.sweStateRead);
-        apicCS.Dispatch(apicKernels.BuildDiag, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.BuildDiag, tgApic.x, tgApic.y, tgApic.z);
 
         apicCS.SetTexture(apicKernels.InitCG, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(apicKernels.InitCG, "_ApicMassInt", buffers.apicGridMass);
@@ -449,14 +446,14 @@ public partial class SimulationManager : MonoBehaviour
         apicCS.SetBuffer(apicKernels.InitCG, "_PcgP", buffers.pcgP);
         apicCS.SetBuffer(apicKernels.InitCG, "_PcgQ", buffers.pcgQ);
         apicCS.SetBuffer(apicKernels.InitCG, "_PcgPrecon", buffers.pcgPrecon);
-        apicCS.Dispatch(apicKernels.InitCG, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.InitCG, tgApic.x, tgApic.y, tgApic.z);
 
         apicCS.SetTexture(apicKernels.DotProductPrecon, "TerrainHeightMap", terrainHeightMap);
         apicCS.SetBuffer(apicKernels.DotProductPrecon, "_ApicMassInt", buffers.apicGridMass);
         apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgR", buffers.pcgR);
         apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgPrecon", buffers.pcgPrecon);
         apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgDotResult", buffers.pcgDotResult);
-        apicCS.Dispatch(apicKernels.DotProductPrecon, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+        apicCS.Dispatch(apicKernels.DotProductPrecon, tgApic.x, tgApic.y, tgApic.z);
 
         apicCS.SetBuffer(apicKernels.InitRTr, "_PcgDotResult", buffers.pcgDotResult);
         apicCS.SetBuffer(apicKernels.InitRTr, "_PcgScalars", buffers.pcgScalars);
@@ -473,14 +470,14 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.SetBuffer(apicKernels.ApplyA, "_PcgQ", buffers.pcgQ);
             apicCS.SetTexture(apicKernels.ApplyA, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(apicKernels.ApplyA, "_SweState_R", buffers.sweStateRead);
-            apicCS.Dispatch(apicKernels.ApplyA, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.Dispatch(apicKernels.ApplyA, tgApic.x, tgApic.y, tgApic.z);
 
             apicCS.SetTexture(apicKernels.DotProductGeneric, "TerrainHeightMap", terrainHeightMap);
             apicCS.SetBuffer(apicKernels.DotProductGeneric, "_ApicMassInt", buffers.apicGridMass);
             apicCS.SetBuffer(apicKernels.DotProductGeneric, "_PcgP", buffers.pcgP);
             apicCS.SetBuffer(apicKernels.DotProductGeneric, "_PcgQ", buffers.pcgQ);
             apicCS.SetBuffer(apicKernels.DotProductGeneric, "_PcgDotResult", buffers.pcgDotResult);
-            apicCS.Dispatch(apicKernels.DotProductGeneric, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.Dispatch(apicKernels.DotProductGeneric, tgApic.x, tgApic.y, tgApic.z);
 
             apicCS.SetBuffer(apicKernels.CalculateAlpha, "_PcgDotResult", buffers.pcgDotResult);
             apicCS.SetBuffer(apicKernels.CalculateAlpha, "_PcgScalars", buffers.pcgScalars);
@@ -493,13 +490,13 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgQ", buffers.pcgQ);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgR", buffers.pcgR);
             apicCS.SetBuffer(apicKernels.UpdatePR, "_PcgScalars", buffers.pcgScalars);
-            apicCS.Dispatch(apicKernels.UpdatePR, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.Dispatch(apicKernels.UpdatePR, tgApic.x, tgApic.y, tgApic.z);
 
             apicCS.SetBuffer(apicKernels.DotProductPrecon, "_ApicMassInt", buffers.apicGridMass);
             apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgR", buffers.pcgR);
             apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgPrecon", buffers.pcgPrecon);
             apicCS.SetBuffer(apicKernels.DotProductPrecon, "_PcgDotResult", buffers.pcgDotResult);
-            apicCS.Dispatch(apicKernels.DotProductPrecon, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.Dispatch(apicKernels.DotProductPrecon, tgApic.x, tgApic.y, tgApic.z);
 
             apicCS.SetBuffer(apicKernels.CalculateBeta, "_PcgDotResult", buffers.pcgDotResult);
             apicCS.SetBuffer(apicKernels.CalculateBeta, "_PcgScalars", buffers.pcgScalars);
@@ -511,7 +508,7 @@ public partial class SimulationManager : MonoBehaviour
             apicCS.SetBuffer(apicKernels.UpdateD, "_PcgR", buffers.pcgR);
             apicCS.SetBuffer(apicKernels.UpdateD, "_PcgPrecon", buffers.pcgPrecon);
             apicCS.SetBuffer(apicKernels.UpdateD, "_PcgScalars", buffers.pcgScalars);
-            apicCS.Dispatch(apicKernels.UpdateD, tgAPIC_X, tgAPIC_Y, tgAPIC_Z);
+            apicCS.Dispatch(apicKernels.UpdateD, tgApic.x, tgApic.y, tgApic.z);
         }
 
         // =========================================================
