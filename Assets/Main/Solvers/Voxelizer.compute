@@ -78,10 +78,7 @@ void ClearVoxelGrid(uint3 id : SV_DispatchThreadID) {
     VoxelGrid_MomZ[flatIdx] = 0;
 }
 
-// ==========================================
-// 1. 粒子のスプラッティング (SplatParticles)
-// APIC粒子の持つ質量と運動量を、描画用の高解像度ボクセルグリッドに焼き付ける
-// ==========================================
+// APIC粒子のスプラッティング
 [numthreads(64,1,1)]
 void SplatParticles(uint3 id : SV_DispatchThreadID) {
     uint count = _ActiveParticleCount.Load(0);
@@ -102,23 +99,17 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
     int slice = _GridSize.x * _GridSize.y;
     int row = _GridSize.x;
 
-    // --- 運動量のSplat ---
     if (all(nearestIdx >= 0) && all(nearestIdx < _GridSize)) {
         int nearestFlatIdx = nearestIdx.x + nearestIdx.y * row + nearestIdx.z * slice;
         float3 mom = p.velocity * p.mass * 8.0f;
-        InterlockedAdd(VoxelGrid_MomX[nearestFlatIdx], (int)(mom.x * 10000.0f));
-        InterlockedAdd(VoxelGrid_MomY[nearestFlatIdx], (int)(mom.y * 10000.0f));
-        InterlockedAdd(VoxelGrid_MomZ[nearestFlatIdx], (int)(mom.z * 10000.0f));
+        InterlockedAdd(VoxelGrid_MomX[nearestFlatIdx], (int)(mom.x * ATOMIC_SCALE));
+        InterlockedAdd(VoxelGrid_MomY[nearestFlatIdx], (int)(mom.y * ATOMIC_SCALE));
+        InterlockedAdd(VoxelGrid_MomZ[nearestFlatIdx], (int)(mom.z * ATOMIC_SCALE));
     }
 
-    // --- 密度のSplat ---
     float densityBoost = 8.0f; 
     
-    // 完全に安全な内側領域ならif文を全消去した高速ループを使う
-    if (baseIdx.x >= 0 && baseIdx.x < _GridSize.x - 1 &&
-        baseIdx.y >= 0 && baseIdx.y < _GridSize.y - 1 &&
-        baseIdx.z >= 0 && baseIdx.z < _GridSize.z - 1) 
-    {
+    if (all(baseIdx >= 0) && all(baseIdx < _GridSize - 1)) {
         int baseFlatIdx = baseIdx.x + baseIdx.y * row + baseIdx.z * slice;
         
         [unroll]
@@ -128,15 +119,13 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
                 [unroll]
                 for (int x = 0; x <= 1; x++) {
                     float weight = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y) * (z == 0 ? 1.0f - f.z : f.z);
-                    int offset = x + y * row + z * slice; // 定数として展開される
-                    InterlockedAdd(VoxelGrid_Density[baseFlatIdx + offset], (int)(weight * p.mass * densityBoost * 10000.0f));
+                    int offset = x + y * row + z * slice;
+                    InterlockedAdd(VoxelGrid_Density[baseFlatIdx + offset], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
                 }
             }
         }
-    } 
-    else 
-    {
-        // 境界付近の少数のパーティクルだけ従来の重いチェック付きループを回す
+    } else {
+        // 境界付近のパーティクルだけ重いチェック付きループ
         [unroll]
         for (int z = 0; z <= 1; z++) {
             [unroll]
@@ -148,18 +137,14 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
 
                     float weight = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y) * (z == 0 ? 1.0f - f.z : f.z);
                     int flatIdx = voxelIdx.x + voxelIdx.y * row + voxelIdx.z * slice;
-                    InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(weight * p.mass * densityBoost * 10000.0f));
+                    InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
                 }
             }
         }
     }
 }
 
-// ==========================================
-// 2. SWE水面のスプラッティング (SplatSWE)
-// SWEの高さ情報も同じボクセルグリッドに焼き込み、APICとシームレスに結合する
-// ※SWEのSplatはAPIC用で、SWE自体はボクセル化しない
-// ==========================================
+// SWE水面のスプラッティング
 [numthreads(8,8,8)]
 void SplatSWE(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
@@ -177,20 +162,15 @@ void SplatSWE(uint3 id : SV_DispatchThreadID) {
 
     float h = _SweState_R[sweIdx].h;
     
-    // 水深が極端に浅い陸地の水はボクセル化しない（霜柱とZファイティング防止）
     if (h < 0.05) return; 
 
-    // 正しく「現在のセルの地形高」を取得する
     float b_c = TerrainHeightMap.Load(int3(sweX, sweY, 0)).r;
 
     float2 voxelWorldXY = float2(localX + voxel_origin.x, localY + voxel_origin.y);
     float fft_y = GetFFTSurfaceY(voxelWorldXY);
 
-    // 水深が浅い場所ではFFTの波高をスムーズに消す
-    // (水深0.1m以下では波立たせず、1.0m以上で100%の波高にする)
     float fft_blend = smoothstep(0.1, 1.0, h); 
 
-    // 絶対水面高 ＝ 地形高 ＋ 水深 ＋ (減衰させた波高)
     float absolute_swe_z = b_c + h + (fft_y * fft_blend); 
 
     float voxelWorldZ = voxel_origin.z + (id.z * _CellSize);
@@ -199,16 +179,11 @@ void SplatSWE(uint3 id : SV_DispatchThreadID) {
     if (diff > 0.0) {
         float density = saturate(diff / _CellSize); 
         int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
-        InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(density * 10000.0f));
+        InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(density * ATOMIC_SCALE));
     }
 }
 
-// ==========================================
-// 3. 密度のブラー処理 (BlurX, BlurY, BlurZ)
-// 少し離れた位置の密度もサンプリングできるように、グリッド全体をぼかしてグラデーションを作る。
-// ==========================================
-
-// --- X軸ブラー ---
+// 密度ブラー
 [numthreads(8,8,8)]
 void BlurX(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
@@ -224,10 +199,9 @@ void BlurX(uint3 id : SV_DispatchThreadID) {
     float dC = (float)VoxelGrid_Density[id.x + baseIdx];
     float dR = (float)VoxelGrid_Density[x_right + baseIdx];
     
-    VoxelGrid_BlurA[id.x + baseIdx] = (dL * 0.25f + dC * 0.5f + dR * 0.25f) / 10000.0f;
+    VoxelGrid_BlurA[id.x + baseIdx] = (dL * 0.25f + dC * 0.5f + dR * 0.25f) / ATOMIC_SCALE;
 }
 
-// --- Y軸ブラー ---
 [numthreads(8,8,8)]
 void BlurY(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
@@ -246,7 +220,6 @@ void BlurY(uint3 id : SV_DispatchThreadID) {
     VoxelGrid_BlurB[id.x + id.y * row + id.z * slice] = dD * 0.25f + dC * 0.5f + dU * 0.25f;
 }
 
-// --- Z軸ブラー ---
 [numthreads(8,8,8)]
 void BlurZ(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
@@ -265,9 +238,8 @@ void BlurZ(uint3 id : SV_DispatchThreadID) {
 }
 
 // ==========================================
-// 4. マーチングキューブと泡判定用ヘルパー関数
+// マーチングキューブ用補助関数
 // ==========================================
-
 float GetFinalDensity(int3 idx) {
     if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
     return VoxelGrid_FinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
@@ -277,7 +249,7 @@ float3 GetVelocity(int3 idx) {
     if (any(idx < 0) || any(idx >= _GridSize)) return float3(0,0,0);
     int flatIdx = idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y;
     
-    // densityBoost(8.0f) を打ち消す
+    // densityBoostを打ち消す
     float totalDensity = (float)VoxelGrid_Density[flatIdx] / 8.0f; 
     
     if (totalDensity < 0.0001f) return float3(0,0,0); 
@@ -294,14 +266,12 @@ float3 VertexInterp(float iso, float3 p1, float3 p2, float valp1, float valp2) {
     return p1 + mu * (p2 - p1);
 }
 
-// --- 密度取得（地下は水、空中は空気とする） ---
 float GetDensitySafe(int3 idx) {
-    if (idx.z < 0) return 1.0f; // 海底より下は「完全に水」
-    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0f; // 領域外は「空気」
+    if (idx.z < 0) return 1.0f;
+    if (any(idx < 0) || any(idx >= _GridSize)) return 0.0f;
     return VoxelGrid_FinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
 }
 
-// --- 地形の高さを取得 ---
 float GetTerrainHeight(float2 world_xy) {
     float localX = world_xy.x - _WorldOffset.x;
     float localY = world_xy.y - _WorldOffset.y;
@@ -310,9 +280,8 @@ float GetTerrainHeight(float2 world_xy) {
     return TerrainHeightMap.Load(int3(sweX, sweY, 0)).r;
 }
 
-// --- サンプラー ---
 float SampleDensityTrilinear(float3 world_pos_zup) {
-    // サンプリング点が地形より下なら、強制的に「水(1.0)」とする
+    // サンプリング点が地形より下なら、水扱い
     float terrain_z = GetTerrainHeight(world_pos_zup.xy);
     if (world_pos_zup.z <= terrain_z) return 1.0f; 
 
@@ -331,12 +300,10 @@ float SampleDensityTrilinear(float3 world_pos_zup) {
     return lerp(d0, d1, f.z);
 }
 
-// --- 3. 空気混入度（Aeration）の計算 ---
-// 法線に依存せず、絶対座標の上下左右前後を見るためノイズに強い。
-// 表面から少し離れた位置(radius)の密度をサンプリングする。
+// 飛沫と水を分けるために少し離れた球面上をサンプルする
+// すぐ隣をサンプルするとすべて同じ値になってしまう。
 float GetAeration(float3 pos_zup, float radius) {
     float sum = 0.0f;
-    // 生の密度を 0.0(空気) 〜 1.0(水) の割合に滑らかに正規化して足す
     sum += smoothstep(0.0f, _IsoLevel * 2.0f, SampleDensityTrilinear(pos_zup + float3(radius, 0, 0)));
     sum += smoothstep(0.0f, _IsoLevel * 2.0f, SampleDensityTrilinear(pos_zup + float3(-radius, 0, 0)));
     sum += smoothstep(0.0f, _IsoLevel * 2.0f, SampleDensityTrilinear(pos_zup + float3(0, radius, 0)));
@@ -344,14 +311,12 @@ float GetAeration(float3 pos_zup, float radius) {
     sum += smoothstep(0.0f, _IsoLevel * 2.0f, SampleDensityTrilinear(pos_zup + float3(0, 0, radius)));
     sum += smoothstep(0.0f, _IsoLevel * 2.0f, SampleDensityTrilinear(pos_zup + float3(0, 0, -radius)));
     
-    // sumは 0.0(飛沫) 〜 3.0(平らな海)
-    // これを反転させて、0.0(完全に水) 〜 1.0(完全に飛沫) の「滑らかなデータ」としてShaderGraphへ送る
+    // [0.0(飛沫), 3.0(水)] to [0.0(水), 1.0(飛沫)]
     return saturate(1.0f - (sum / 3.0f));
 }
 
 // ==========================================
-// 5. マーチングキューブ (MarchingCubes)
-// 密度グリッドから等値面(IsoLevel)のポリゴンを生成する
+// マーチングキューブ
 // ==========================================
 [numthreads(8,8,8)]
 void MarchingCubes(uint3 id : SV_DispatchThreadID) {
@@ -415,9 +380,6 @@ void MarchingCubes(uint3 id : SV_DispatchThreadID) {
         float3 edge2 = tri.v2 - tri.v0;
         tri.norm = normalize(cross(edge1, edge2)); 
 
-        // 固定軸の広域トリリニアサンプリング
-        
-        // サンプリング半径（2セル分離れた場所を見る）
         float r = 2.0f * _CellSize; 
         float aeration0 = GetAeration(v0_zup, r);
         float aeration1 = GetAeration(v1_zup, r);
