@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(CharacterController))]
 public class PlayerController : MonoBehaviour
@@ -11,12 +12,54 @@ public class PlayerController : MonoBehaviour
     public Transform cameraTransform;
     public Vector3 cameraOffset = new Vector3(0, 2f, -5f);
     public float cameraFollowSpeed = 10f;
-    public float lookSpeedX = 150f;
-    public float lookSpeedY = 100f;
+    
+    public float lookSpeedX = 5f; 
+    public float lookSpeedY = 3f;
 
     private CharacterController controller;
     private float verticalVelocity = 0f;
     private float cameraPitch = 0f;
+
+    // --- Input System 用のAction定義 ---
+    private InputAction moveAction;
+    private InputAction lookAction;
+    private InputAction jumpAction;
+    private InputAction rightClickAction;
+
+    void Awake()
+    {
+        moveAction = new InputAction("Move", binding: "<Gamepad>/leftStick");
+        moveAction.AddCompositeBinding("Dpad")
+            .With("Up", "<Keyboard>/w")
+            .With("Down", "<Keyboard>/s")
+            .With("Left", "<Keyboard>/a")
+            .With("Right", "<Keyboard>/d");
+
+        lookAction = new InputAction("Look", binding: "<Pointer>/delta");
+        lookAction.AddBinding("<Gamepad>/rightStick");
+
+        jumpAction = new InputAction("Jump", binding: "<Keyboard>/space");
+        jumpAction.AddBinding("<Gamepad>/buttonSouth");
+
+        rightClickAction = new InputAction("RightClick", binding: "<Mouse>/rightButton");
+    }
+
+    // Input Actionは有効化(Enable)しないと入力を受け付けません
+    void OnEnable()
+    {
+        moveAction.Enable();
+        lookAction.Enable();
+        jumpAction.Enable();
+        rightClickAction.Enable();
+    }
+
+    void OnDisable()
+    {
+        moveAction.Disable();
+        lookAction.Disable();
+        jumpAction.Disable();
+        rightClickAction.Disable();
+    }
 
     void Start()
     {
@@ -30,32 +73,33 @@ public class PlayerController : MonoBehaviour
 
     void Update()
     {
-        if (Input.GetMouseButton(1))
+        if (rightClickAction.IsPressed())
         {
-            float mouseX = Input.GetAxis("Mouse X");
-            transform.Rotate(0, mouseX * lookSpeedX * Time.deltaTime, 0);
+            Vector2 lookDelta = lookAction.ReadValue<Vector2>();
+            
+            transform.Rotate(0, lookDelta.x * lookSpeedX * Time.deltaTime, 0);
 
-            float mouseY = Input.GetAxis("Mouse Y");
-            cameraPitch -= mouseY * lookSpeedY * Time.deltaTime;
-
+            cameraPitch -= lookDelta.y * lookSpeedY * Time.deltaTime;
             cameraPitch = Mathf.Clamp(cameraPitch, -80f, 80f);
         }
 
-        float h = Input.GetAxis("Horizontal");
-        float v = Input.GetAxis("Vertical");
-
-        Vector3 move = transform.forward * v + transform.right * h;
+        Vector2 moveInput = moveAction.ReadValue<Vector2>();
+        Vector3 move = transform.forward * moveInput.y + transform.right * moveInput.x;
         
         if (move.magnitude > 1f) move.Normalize();
         move *= moveSpeed;
 
-        if (controller.isGrounded) {
+        if (controller.isGrounded) 
+        {
             verticalVelocity = -0.5f; 
 
-            if (Input.GetButtonDown("Jump")) {
+            if (jumpAction.WasPressedThisFrame()) 
+            {
                 verticalVelocity = jumpForce;
             }
-        } else {
+        } 
+        else 
+        {
             verticalVelocity -= 9.81f * Time.deltaTime;
         }
         

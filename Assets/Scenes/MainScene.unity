@@ -659,34 +659,26 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4aa1e12a97190cd4db84a70ef076db96, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::REIMUManager
-  sweGridWidth: 128
-  sweGridHeight: 128
-  dx_swe: 0.5
-  maxParticles: 100000
-  pcgIterations: 8
-  apicGridWidth: 64
-  apicGridHeight: 64
-  apicGridDepth: 64
-  dx_apic: 1
-  rho: 1
-  baseMass: 0.5
-  seaBottomHeight: -3
-  frThreshold: 1
-  gradThreshold: 1.5
-  laplacianThreshold: -2.5
-  conversionRateMultiplier: 20
-  pushZMultiplier: 1
-  splashVelocityMultiplier: 1
-  horizontalMomentumTransfer: 0.3
-  verticalMomentumToWave: 0.3
+  m_DomainLength: {x: 64, y: 64, z: 64}
+  m_SweCellsPerMeter: 2
+  m_ApicCellsPerMeter: 1
+  m_MaxParticles: 1000000
+  m_PcgIterations: 8
+  m_ToApicFroudeTH: 1
+  m_ToApicGradTH: 1.5
+  m_ToApicLaplacianTH: -2.5
+  m_SublimatePerSecond: 20
+  m_SublimateVerticalMulti: 1
+  m_SublimateSplashMulti: 1
+  m_ToSweHorizontalTransfer: 0.3
+  m_ToSweVerticalMomTransfer: 0.1
   mouseRadius: 3
   mouseForce: 3
   sweCS: {fileID: 7200000, guid: 2e97c6e85b96ab04d951d2fb27ad2c1c, type: 3}
   apicCS: {fileID: 7200000, guid: 43f88bce1c6b955409fc9a4bca89100d, type: 3}
   fftOcean: {fileID: 607178131}
   trackTarget: {fileID: 1183562802}
-  sweWorldOffset: {x: 0, y: 0}
-  apicWorldOffset: {x: 0, y: 0, z: 0}
+  worldOffset: {x: 0, y: 0}
   terrainLayer:
     serializedVersion: 2
     m_Bits: 8
@@ -694,11 +686,10 @@ MonoBehaviour:
   fluidMeshMaterial: {fileID: 2100000, guid: 7f72cc365a227db4383058b7f35c172b, type: 2}
   splashMaterial: {fileID: 2100000, guid: e0d7229e29324794d9d8ea0913878b36, type: 2}
   fftOceanMaterial: {fileID: 2100000, guid: 904d3e152db74364d879343e9c1741a8, type: 2}
-  splashSpeedThreshold: 1
-  particleRadius: 1.5
-  isoLevel: 0.2
-  meshResolutionMultiplier: 2
-  foamSampleRadius: 3
+  m_SplashStretchTH: 10
+  m_McParticleRadius: 1.5
+  m_IsoLevelTH: 0.2
+  m_McCellsPerApicCell: 2
 --- !u!4 &634254214
 Transform:
   m_ObjectHideFlags: 0
@@ -879,8 +870,8 @@ MonoBehaviour:
   cameraTransform: {fileID: 330585546}
   cameraOffset: {x: 0, y: 10, z: -30}
   cameraFollowSpeed: 10
-  lookSpeedX: 150
-  lookSpeedY: 100
+  lookSpeedX: 3
+  lookSpeedY: 2
 --- !u!143 &1183562798
 CharacterController:
   m_ObjectHideFlags: 0

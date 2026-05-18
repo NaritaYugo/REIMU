@@ -1,9 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-// =========================================================================
-// 海洋描画用のクリップマップ(同心円状・ドーナツ状のLODメッシュ)を動的に生成する
-// =========================================================================
 public class OceanGridGenerator : MonoBehaviour
 {
     [Header("Clipmap Settings")]
@@ -51,22 +48,18 @@ public class OceanGridGenerator : MonoBehaviour
         {
             for (int x = 0; x <= resolution; x++)
             {
-                // 頂点の配置
                 float px = x * step - size / 2f;
                 float pz = z * step - size / 2f;
                 vertices[v] = new Vector3(px, 0, pz);
                 uvs[v] = new Vector2((float)x / resolution, (float)z / resolution);
 
-                // 面（ポリゴン）を張る処理
                 if (x < resolution && z < resolution)
                 {
                     float quadCenterX = px + step / 2f;
                     float quadCenterZ = pz + step / 2f;
 
-                    // 四角形が「穴」の内側に入っているか判定
                     bool insideHole = (Mathf.Abs(quadCenterX) < holeRadius) && (Mathf.Abs(quadCenterZ) < holeRadius);
 
-                    // 穴の外側の場合だけ、三角形を追加
                     if (!insideHole)
                     {
                         triangles.Add(v);
@@ -86,12 +79,10 @@ public class OceanGridGenerator : MonoBehaviour
         mesh.triangles = triangles.ToArray();
         mesh.RecalculateNormals();
         
-        // 巨大なメッシュがカメラ外で消えないように境界を拡張
         mesh.bounds = new Bounds(Vector3.zero, new Vector3(size * 2, 1000f, size * 2));
 
         mf.mesh = mesh;
 
-        // シェーダー側でLODの継ぎ目を綺麗に補間するための情報を渡す
         MaterialPropertyBlock block = new MaterialPropertyBlock();
         block.SetFloat("_MeshSize", size);
         block.SetFloat("_CurrentGridSize", step);

@@ -1,6 +1,9 @@
-using UnityEngine;
 using System.Reflection;
 using System.Runtime.InteropServices;
+
+using UnityEngine;
+using UnityEngine.InputSystem;
+
 using FluidSimulation;
 
 public partial class SimulationManager : MonoBehaviour
@@ -205,7 +208,7 @@ public partial class SimulationManager : MonoBehaviour
     {
         if (buffers.sweStateRead == null || trackTarget == null) return;
 
-        // 動的タイムステップの計算 ---
+        // 動的タイムステップの計算
         float dtApic = Mathf.Min(Time.deltaTime, 0.0333f);
         float expected_max_depth = 50.0f;
         float expected_wave_speed = Mathf.Sqrt(9.81f * expected_max_depth);
@@ -232,16 +235,20 @@ public partial class SimulationManager : MonoBehaviour
         Vector2 mouseDirSWE = Vector2.zero;
         int mouseActive = 0;
 
-        if (Input.GetMouseButton(0))
+        var mouse = Mouse.current;
+
+        if (mouse != null && mouse.leftButton.isPressed)
         {
             Plane waterPlane = new Plane(Vector3.up, Vector3.zero);
-            Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+            Vector2 currentMousePos = mouse.position.ReadValue();
+            Ray ray = Camera.main.ScreenPointToRay(currentMousePos);
 
             if (waterPlane.Raycast(ray, out float enter))
             {
                 Vector3 hitPoint = ray.GetPoint(enter);
                 if (wasMouseDown)
                 {
+                    // 3D空間内での距離(mouseDeltaは使えない)
                     Vector3 delta = hitPoint - prevMousePos;
                     mouseDirSWE = new Vector2(delta.x, delta.z) / dtApic;
                     if (mouseDirSWE.sqrMagnitude > 0.01f) mouseActive = 1;
@@ -250,7 +257,8 @@ public partial class SimulationManager : MonoBehaviour
                 mousePosSWE = new Vector2(hitPoint.x, hitPoint.z);
             }
         }
-        wasMouseDown = Input.GetMouseButton(0);
+        // マウスの押下状態を更新
+        wasMouseDown = mouse != null && mouse.leftButton.isPressed;
 
         sweCS.SetVector("_MousePos", mousePosSWE);
         sweCS.SetVector("_MouseDir", mouseDirSWE);

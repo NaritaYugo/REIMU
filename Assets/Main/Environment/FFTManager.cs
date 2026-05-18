@@ -34,19 +34,15 @@ public class FFTManager : MonoBehaviour
     [Header("Debug Rendering")]
     public Material fftOceanMaterial;
 
-    // --- テクスチャ配列 ---
-    // FFTの計算は周波数領域(Spectrum)から空間領域(Displacement)への逆変換(IFFT)を行う。
-    // 計算過程の複素数を保持するため、RGFloatやARGBFloatの高精度フォーマットを使用する。
-    private RenderTexture[] h0Textures;       // 初期スペクトル
-    private RenderTexture[] spectrumH, spectrumDx, spectrumDz; // 時間発展後のスペクトル
-    private RenderTexture[] pingPongH, pingPongDx, pingPongDz; // IFFT用のPingPong(入れ替え)バッファ
-    public RenderTexture[] displacementMaps;  // 最終的な頂点変位マップ(XYZ)
+    private RenderTexture[] h0Textures;
+    private RenderTexture[] spectrumH, spectrumDx, spectrumDz;
+    private RenderTexture[] pingPongH, pingPongDx, pingPongDz;
+    public RenderTexture[] displacementMaps;
     public RenderTexture mergedDisplacementMap;
     
-    private Texture2D butterflyTexture; // バタフライ演算用のインデックス・重みテクスチャ
-    private int stages; // FFTのステージ数 (log2(resolution))
+    private Texture2D butterflyTexture;
+    private int stages;
 
-    // --- カーネルIDのキャッシュ ---
     private int kernelInit, kernelUpdate;
     private int kernelIFFTHorizontal, kernelIFFTVertical, kernelFinalize;
 
@@ -73,9 +69,7 @@ public class FFTManager : MonoBehaviour
     {
         for (int i = 0; i < lodCount; i++)
         {
-            // 時間経過に伴う波の位相変化を計算
             UpdateTimeDependentSpectrum(i);
-            // 逆フーリエ変換(IFFT)を実行し、テクスチャ(空間領域)に戻す
             RunIFFT(i);
         }
 
@@ -129,8 +123,6 @@ public class FFTManager : MonoBehaviour
     // =========================================================
     // バタフライ演算用テクスチャの生成
     // =========================================================
-    // FFTアルゴリズムのキモである「どの要素とどの要素を足し引きするか」という
-    // インデックス情報と、回転子(Twiddle Factor)の複素数情報をテクスチャに事前計算して焼く。
     void CreateButterflyTexture()
     {
         butterflyTexture = new Texture2D(stages, resolution, TextureFormat.RGBAFloat, false, true);
@@ -145,7 +137,7 @@ public class FFTManager : MonoBehaviour
                 int k = i % butterflyWidth;
                 bool isTop = k < halfWidth;
 
-                // 回転子 (Twiddle factor) = e^(-i * 2PI * k / N)
+                // 回転子 e^(-i * 2PI * k / N)
                 float angle = 2.0f * Mathf.PI * (k % halfWidth) / butterflyWidth;
                 float twiddleRe = Mathf.Cos(angle);
                 float twiddleIm = Mathf.Sin(angle);
@@ -158,14 +150,12 @@ public class FFTManager : MonoBehaviour
                 int topIdx = isTop ? i : i - halfWidth;
                 int botIdx = isTop ? i + halfWidth : i;
 
-                // 最初のステージはビットリバース（インデックスのビット並びを反転）を行う
                 if (stage == 0) {
                     topIdx = ReverseBits(topIdx, stages);
                     botIdx = ReverseBits(botIdx, stages);
                 }
 
                 int pixelIndex = stage + i * stages; 
-                // RGには回転子の複素数、BAにはバタフライ演算で参照する2つのインデックスを格納
                 colors[pixelIndex] = new Color(twiddleRe, twiddleIm, topIdx, botIdx);
             }
         }
@@ -276,7 +266,6 @@ public class FFTManager : MonoBehaviour
 
     void Dispatch(ComputeShader shader, int kernelId)
     {
-        // 小数点計算を省き、整数演算で最適化
         int threadGroups = (resolution + 7) / 8;
         shader.Dispatch(kernelId, threadGroups, threadGroups, 1);
     }
