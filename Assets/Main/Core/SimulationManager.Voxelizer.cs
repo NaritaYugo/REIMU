@@ -13,7 +13,6 @@ public partial class SimulationManager
     [SerializeField] private float m_McParticleRadius = 1.5f;
     [SerializeField] private float m_IsoLevelTH = 0.2f; 
     [SerializeField] private int m_McCellsPerApicCell = 2;
-    [SerializeField] private float m_FoamSampleRadius = 3.0f;
 
     private void InitializeVoxelizer()
     {
@@ -62,10 +61,10 @@ public partial class SimulationManager
             // =========================================================
             // Step 13-1: ボクセルグリッドの初期化
             // =========================================================
-            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "VoxelGrid_Density", buffers.voxelGrid);
-            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "VoxelGrid_MomX", buffers.voxelMomX);
-            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "VoxelGrid_MomY", buffers.voxelMomY);
-            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "VoxelGrid_MomZ", buffers.voxelMomZ);
+            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelDensity", buffers.voxelGrid);
+            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomX", buffers.voxelMomX);
+            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomY", buffers.voxelMomY);
+            voxelizerCS.SetBuffer(voxKernels.ClearVoxelGrid, "_VoxelMomZ", buffers.voxelMomZ);
             voxelizerCS.Dispatch(voxKernels.ClearVoxelGrid, tgVoxelX, tgVoxelY, tgVoxelZ);
 
             // =========================================================
@@ -74,10 +73,10 @@ public partial class SimulationManager
             // =========================================================
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleList_R", buffers.activeParticleList);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ActiveParticleCount", buffers.activeParticleCount);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_Density", buffers.voxelGrid);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomX", buffers.voxelMomX);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomY", buffers.voxelMomY);
-            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "VoxelGrid_MomZ", buffers.voxelMomZ);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_VoxelDensity", buffers.voxelGrid);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_VoxelMomX", buffers.voxelMomX);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_VoxelMomY", buffers.voxelMomY);
+            voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_VoxelMomZ", buffers.voxelMomZ);
             voxelizerCS.SetBuffer(voxKernels.SplatParticles, "_ParticleBuffer", buffers.apicParticle);
             voxelizerCS.DispatchIndirect(voxKernels.SplatParticles, buffers.particleDispatchArgs);
 
@@ -95,7 +94,7 @@ public partial class SimulationManager
             // APICボクセルとSWE/FFTの境界が不自然に切れないよう、SWEの水面も密度として加算する
             // =========================================================
             voxelizerCS.SetTexture(voxKernels.SplatSWE, "TerrainHeightMap", terrainHeightMap);
-            voxelizerCS.SetBuffer(voxKernels.SplatSWE, "VoxelGrid_Density", buffers.voxelGrid);
+            voxelizerCS.SetBuffer(voxKernels.SplatSWE, "_VoxelDensity", buffers.voxelGrid);
             voxelizerCS.SetBuffer(voxKernels.SplatSWE, "_SweState_R", buffers.sweStateRead);
             voxelizerCS.SetInts("_SweGridRes", new int[] { sweGridRes.x, sweGridRes.y });
             voxelizerCS.SetFloat("_dxSwe", dxSwe);
@@ -105,16 +104,16 @@ public partial class SimulationManager
             // Step 13-4: 密度のブラー処理 (XYZ 3パス)
             // 少し離れた位置の密度をサンプリングできるよう、グリッド全体にぼかしをかける
             // =========================================================
-            voxelizerCS.SetBuffer(voxKernels.BlurX, "VoxelGrid_Density", buffers.voxelGrid);
-            voxelizerCS.SetBuffer(voxKernels.BlurX, "VoxelGrid_BlurA", buffers.voxelBlurA);
+            voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelDensity", buffers.voxelGrid);
+            voxelizerCS.SetBuffer(voxKernels.BlurX, "_VoxelBlurA", buffers.voxelBlurA);
             voxelizerCS.Dispatch(voxKernels.BlurX, tgVoxelX, tgVoxelY, tgVoxelZ);
 
-            voxelizerCS.SetBuffer(voxKernels.BlurY, "VoxelGrid_BlurA", buffers.voxelBlurA);
-            voxelizerCS.SetBuffer(voxKernels.BlurY, "VoxelGrid_BlurB", buffers.voxelBlurB);
+            voxelizerCS.SetBuffer(voxKernels.BlurY, "_VoxelBlurA", buffers.voxelBlurA);
+            voxelizerCS.SetBuffer(voxKernels.BlurY, "_VoxelBlurB", buffers.voxelBlurB);
             voxelizerCS.Dispatch(voxKernels.BlurY, tgVoxelX, tgVoxelY, tgVoxelZ);
 
-            voxelizerCS.SetBuffer(voxKernels.BlurZ, "VoxelGrid_BlurB", buffers.voxelBlurB);
-            voxelizerCS.SetBuffer(voxKernels.BlurZ, "VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
+            voxelizerCS.SetBuffer(voxKernels.BlurZ, "_VoxelBlurB", buffers.voxelBlurB);
+            voxelizerCS.SetBuffer(voxKernels.BlurZ, "_VoxelFinalDensity", buffers.voxelFinalDensity);
             voxelizerCS.Dispatch(voxKernels.BlurZ, tgVoxelX, tgVoxelY, tgVoxelZ);
 
             // =========================================================
@@ -122,11 +121,11 @@ public partial class SimulationManager
             // スカラー場（密度グリッド）から等値面（IsoLevel）を抽出し、ポリゴン(Triangle)を生成する
             // =========================================================
             buffers.triangle.SetCounterValue(0); 
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "VoxelGrid_Density", buffers.voxelGrid);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "VoxelGrid_MomX", buffers.voxelMomX);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "VoxelGrid_MomY", buffers.voxelMomY);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "VoxelGrid_MomZ", buffers.voxelMomZ);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelDensity", buffers.voxelGrid);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelMomX", buffers.voxelMomX);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelMomY", buffers.voxelMomY);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelMomZ", buffers.voxelMomZ);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelFinalDensity", buffers.voxelFinalDensity);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "TriangleBuffer", buffers.triangle);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "edgeTable", buffers.edgeTable);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "triTable", buffers.triTable);
@@ -155,7 +154,7 @@ public partial class SimulationManager
             splashMaterial.SetVector("_WorldOffset", worldOffset);
 
             if (buffers.voxelFinalDensity != null) {
-                splashMaterial.SetBuffer("VoxelGrid_FinalDensity", buffers.voxelFinalDensity);
+                splashMaterial.SetBuffer("_VoxelFinalDensity", buffers.voxelFinalDensity);
                 splashMaterial.SetFloat("_IsoLevel", m_IsoLevelTH);
             }
             Graphics.DrawProcedural(splashMaterial, new Bounds(Vector3.zero, Vector3.one * 1000), MeshTopology.Triangles, m_MaxParticles * 6, 1);

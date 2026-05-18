@@ -22,17 +22,15 @@ float _SplashSpeedThreshold;
 
 StructuredBuffer<APICParticle> _ParticleBuffer;
 StructuredBuffer<SWECell> _SweState_R;
-RWStructuredBuffer<float> VoxelGrid_FoamFactor; 
-float _FoamSampleRadius;
 
-RWStructuredBuffer<int> VoxelGrid_Density;
-RWStructuredBuffer<int> VoxelGrid_MomX;
-RWStructuredBuffer<int> VoxelGrid_MomY;
-RWStructuredBuffer<int> VoxelGrid_MomZ;
+RWStructuredBuffer<int> _VoxelDensity;
+RWStructuredBuffer<int> _VoxelMomX;
+RWStructuredBuffer<int> _VoxelMomY;
+RWStructuredBuffer<int> _VoxelMomZ;
 
-RWStructuredBuffer<float> VoxelGrid_BlurA;
-RWStructuredBuffer<float> VoxelGrid_BlurB;
-RWStructuredBuffer<float> VoxelGrid_FinalDensity; 
+RWStructuredBuffer<float> _VoxelBlurA;
+RWStructuredBuffer<float> _VoxelBlurB;
+RWStructuredBuffer<float> _VoxelFinalDensity; 
 
 AppendStructuredBuffer<Triangle> TriangleBuffer;
 StructuredBuffer<int> edgeTable;
@@ -72,10 +70,10 @@ inline float3 GetVoxelOrigin() {
 void ClearVoxelGrid(uint3 id : SV_DispatchThreadID) {
     if (any(id >= (uint3)_GridSize)) return;
     int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
-    VoxelGrid_Density[flatIdx] = 0;
-    VoxelGrid_MomX[flatIdx] = 0;
-    VoxelGrid_MomY[flatIdx] = 0;
-    VoxelGrid_MomZ[flatIdx] = 0;
+    _VoxelDensity[flatIdx] = 0;
+    _VoxelMomX[flatIdx] = 0;
+    _VoxelMomY[flatIdx] = 0;
+    _VoxelMomZ[flatIdx] = 0;
 }
 
 // APIC粒子のスプラッティング
@@ -102,9 +100,9 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
     if (all(nearestIdx >= 0) && all(nearestIdx < _GridSize)) {
         int nearestFlatIdx = nearestIdx.x + nearestIdx.y * row + nearestIdx.z * slice;
         float3 mom = p.velocity * p.mass * 8.0f;
-        InterlockedAdd(VoxelGrid_MomX[nearestFlatIdx], (int)(mom.x * ATOMIC_SCALE));
-        InterlockedAdd(VoxelGrid_MomY[nearestFlatIdx], (int)(mom.y * ATOMIC_SCALE));
-        InterlockedAdd(VoxelGrid_MomZ[nearestFlatIdx], (int)(mom.z * ATOMIC_SCALE));
+        InterlockedAdd(_VoxelMomX[nearestFlatIdx], (int)(mom.x * ATOMIC_SCALE));
+        InterlockedAdd(_VoxelMomY[nearestFlatIdx], (int)(mom.y * ATOMIC_SCALE));
+        InterlockedAdd(_VoxelMomZ[nearestFlatIdx], (int)(mom.z * ATOMIC_SCALE));
     }
 
     float densityBoost = 8.0f; 
@@ -120,7 +118,7 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
                 for (int x = 0; x <= 1; x++) {
                     float weight = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y) * (z == 0 ? 1.0f - f.z : f.z);
                     int offset = x + y * row + z * slice;
-                    InterlockedAdd(VoxelGrid_Density[baseFlatIdx + offset], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
+                    InterlockedAdd(_VoxelDensity[baseFlatIdx + offset], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
                 }
             }
         }
@@ -137,7 +135,7 @@ void SplatParticles(uint3 id : SV_DispatchThreadID) {
 
                     float weight = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y) * (z == 0 ? 1.0f - f.z : f.z);
                     int flatIdx = voxelIdx.x + voxelIdx.y * row + voxelIdx.z * slice;
-                    InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
+                    InterlockedAdd(_VoxelDensity[flatIdx], (int)(weight * p.mass * densityBoost * ATOMIC_SCALE));
                 }
             }
         }
@@ -179,7 +177,7 @@ void SplatSWE(uint3 id : SV_DispatchThreadID) {
     if (diff > 0.0) {
         float density = saturate(diff / _CellSize); 
         int flatIdx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
-        InterlockedAdd(VoxelGrid_Density[flatIdx], (int)(density * ATOMIC_SCALE));
+        InterlockedAdd(_VoxelDensity[flatIdx], (int)(density * ATOMIC_SCALE));
     }
 }
 
@@ -195,11 +193,11 @@ void BlurX(uint3 id : SV_DispatchThreadID) {
     int slice = _GridSize.x * _GridSize.y;
     int baseIdx = id.y * row + id.z * slice;
     
-    float dL = (float)VoxelGrid_Density[x_left + baseIdx];
-    float dC = (float)VoxelGrid_Density[id.x + baseIdx];
-    float dR = (float)VoxelGrid_Density[x_right + baseIdx];
+    float dL = (float)_VoxelDensity[x_left + baseIdx];
+    float dC = (float)_VoxelDensity[id.x + baseIdx];
+    float dR = (float)_VoxelDensity[x_right + baseIdx];
     
-    VoxelGrid_BlurA[id.x + baseIdx] = (dL * 0.25f + dC * 0.5f + dR * 0.25f) / ATOMIC_SCALE;
+    _VoxelBlurA[id.x + baseIdx] = (dL * 0.25f + dC * 0.5f + dR * 0.25f) / ATOMIC_SCALE;
 }
 
 [numthreads(8,8,8)]
@@ -213,11 +211,11 @@ void BlurY(uint3 id : SV_DispatchThreadID) {
     int slice = _GridSize.x * _GridSize.y;
     int base_xz = id.x + id.z * slice;
     
-    float dD = VoxelGrid_BlurA[base_xz + y_down * row];
-    float dC = VoxelGrid_BlurA[base_xz + id.y * row];
-    float dU = VoxelGrid_BlurA[base_xz + y_up * row];
+    float dD = _VoxelBlurA[base_xz + y_down * row];
+    float dC = _VoxelBlurA[base_xz + id.y * row];
+    float dU = _VoxelBlurA[base_xz + y_up * row];
     
-    VoxelGrid_BlurB[id.x + id.y * row + id.z * slice] = dD * 0.25f + dC * 0.5f + dU * 0.25f;
+    _VoxelBlurB[id.x + id.y * row + id.z * slice] = dD * 0.25f + dC * 0.5f + dU * 0.25f;
 }
 
 [numthreads(8,8,8)]
@@ -230,11 +228,11 @@ void BlurZ(uint3 id : SV_DispatchThreadID) {
     int slice = _GridSize.x * _GridSize.y;
     int base_xy = id.x + id.y * _GridSize.x;
     
-    float dB = VoxelGrid_BlurB[base_xy + z_back * slice];
-    float dC = VoxelGrid_BlurB[base_xy + id.z * slice];
-    float dF = VoxelGrid_BlurB[base_xy + z_front * slice];
+    float dB = _VoxelBlurB[base_xy + z_back * slice];
+    float dC = _VoxelBlurB[base_xy + id.z * slice];
+    float dF = _VoxelBlurB[base_xy + z_front * slice];
     
-    VoxelGrid_FinalDensity[base_xy + id.z * slice] = dB * 0.25f + dC * 0.5f + dF * 0.25f;
+    _VoxelFinalDensity[base_xy + id.z * slice] = dB * 0.25f + dC * 0.5f + dF * 0.25f;
 }
 
 // ==========================================
@@ -242,7 +240,7 @@ void BlurZ(uint3 id : SV_DispatchThreadID) {
 // ==========================================
 float GetFinalDensity(int3 idx) {
     if (any(idx < 0) || any(idx >= _GridSize)) return 0.0;
-    return VoxelGrid_FinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
+    return _VoxelFinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
 }
 
 float3 GetVelocity(int3 idx) {
@@ -250,10 +248,10 @@ float3 GetVelocity(int3 idx) {
     int flatIdx = idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y;
     
     // densityBoostを打ち消す
-    float totalDensity = (float)VoxelGrid_Density[flatIdx] / 8.0f; 
+    float totalDensity = (float)_VoxelDensity[flatIdx] / 8.0f; 
     
     if (totalDensity < 0.0001f) return float3(0,0,0); 
-    float3 totalMom = float3((float)VoxelGrid_MomX[flatIdx], (float)VoxelGrid_MomY[flatIdx], (float)VoxelGrid_MomZ[flatIdx]);
+    float3 totalMom = float3((float)_VoxelMomX[flatIdx], (float)_VoxelMomY[flatIdx], (float)_VoxelMomZ[flatIdx]);
     
     return totalMom / totalDensity;
 }
@@ -269,7 +267,7 @@ float3 VertexInterp(float iso, float3 p1, float3 p2, float valp1, float valp2) {
 float GetDensitySafe(int3 idx) {
     if (idx.z < 0) return 1.0f;
     if (any(idx < 0) || any(idx >= _GridSize)) return 0.0f;
-    return VoxelGrid_FinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
+    return _VoxelFinalDensity[idx.x + idx.y * _GridSize.x + idx.z * _GridSize.x * _GridSize.y];
 }
 
 float GetTerrainHeight(float2 world_xy) {
