@@ -174,13 +174,10 @@ public partial class SimulationManager
             }
             if (buffers.sweStateRead != null) {
                 fftOceanMaterial.SetBuffer("_SweState_R", buffers.sweStateRead);
+                fftOceanMaterial.SetFloat("_IsoLevel", m_IsoLevelTH);
                 fftOceanMaterial.SetFloat("_SweWidth", sweGridRes.x);
                 fftOceanMaterial.SetFloat("_dxSwe", dxSwe);
                 fftOceanMaterial.SetVector("_WorldOffset", worldOffset);
-            }
-            if (buffers.voxelFinalDensity != null) {
-                fftOceanMaterial.SetBuffer("_VoxelFinalDensity", buffers.voxelFinalDensity);
-                fftOceanMaterial.SetFloat("_IsoLevel", m_IsoLevelTH);
             }
             if (terrainHeightMap != null) {
                 fftOceanMaterial.SetTexture("TerrainHeightMap", terrainHeightMap);
