@@ -127,7 +127,7 @@ Material:
     - _ShallowWaterColor: {r: 0.61548597, g: 0.9622642, b: 0.8948351, a: 1}
     - _SweWorldOffset: {r: -93.2, g: -14.599998, b: 0, a: 0}
     - _WaterColor: {r: 0.3136418, g: 0.81886786, b: 0.7898319, a: 1}
-    - _WorldOffset: {r: -143.2, g: -19.099998, b: 0, a: 0}
+    - _WorldOffset: {r: -97.7, g: 35.4, b: 0, a: 0}
     - _swe_world_offset: {r: -72.7, g: -26.599998, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

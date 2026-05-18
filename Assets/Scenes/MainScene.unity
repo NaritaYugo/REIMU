@@ -870,8 +870,8 @@ MonoBehaviour:
   cameraTransform: {fileID: 330585546}
   cameraOffset: {x: 0, y: 10, z: -30}
   cameraFollowSpeed: 10
-  lookSpeedX: 3
-  lookSpeedY: 2
+  lookSpeedX: 5
+  lookSpeedY: 3
 --- !u!143 &1183562798
 CharacterController:
   m_ObjectHideFlags: 0
