@@ -126,9 +126,9 @@ public partial class SimulationManager
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelMomY", buffers.voxelMomY);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelMomZ", buffers.voxelMomZ);
             voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_VoxelFinalDensity", buffers.voxelFinalDensity);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "TriangleBuffer", buffers.triangle);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "edgeTable", buffers.edgeTable);
-            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "triTable", buffers.triTable);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_TriangleBuffer", buffers.triangle);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_EdgeTable", buffers.edgeTable);
+            voxelizerCS.SetBuffer(voxKernels.MarchingCubes, "_TriTable", buffers.triTable);
             voxelizerCS.Dispatch(voxKernels.MarchingCubes, tgVoxelX, tgVoxelY, tgVoxelZ);
 
             ComputeBuffer.CopyCount(buffers.triangle, buffers.drawArgs, 4);

@@ -32,9 +32,9 @@ RWStructuredBuffer<float> _VoxelBlurA;
 RWStructuredBuffer<float> _VoxelBlurB;
 RWStructuredBuffer<float> _VoxelFinalDensity; 
 
-AppendStructuredBuffer<Triangle> TriangleBuffer;
-StructuredBuffer<int> edgeTable;
-StructuredBuffer<int> triTable;
+AppendStructuredBuffer<Triangle> _TriangleBuffer;
+StructuredBuffer<int> _EdgeTable;
+StructuredBuffer<int> _TriTable;
 StructuredBuffer<uint> _ActiveParticleList_R;
 ByteAddressBuffer _ActiveParticleCount;
 
@@ -338,7 +338,7 @@ void MarchingCubes(uint3 id : SV_DispatchThreadID) {
     if (val[4] < _IsoLevel) cubeIndex |= 16; if (val[5] < _IsoLevel) cubeIndex |= 32;
     if (val[6] < _IsoLevel) cubeIndex |= 64; if (val[7] < _IsoLevel) cubeIndex |= 128;
 
-    int edges = edgeTable[cubeIndex];
+    int edges = _EdgeTable[cubeIndex];
     if (edges == 0) return;
 
     float3 voxel_origin = GetVoxelOrigin();
@@ -363,12 +363,12 @@ void MarchingCubes(uint3 id : SV_DispatchThreadID) {
     
     float3 velocity = GetVelocity(id);
 
-    for (int i = 0; triTable[cubeIndex * 16 + i] != -1; i += 3) {
+    for (int i = 0; _TriTable[cubeIndex * 16 + i] != -1; i += 3) {
         Triangle tri;
         
-        float3 v0_zup = vertList[triTable[cubeIndex * 16 + i]];
-        float3 v1_zup = vertList[triTable[cubeIndex * 16 + i + 1]];
-        float3 v2_zup = vertList[triTable[cubeIndex * 16 + i + 2]];
+        float3 v0_zup = vertList[_TriTable[cubeIndex * 16 + i]];
+        float3 v1_zup = vertList[_TriTable[cubeIndex * 16 + i + 1]];
+        float3 v2_zup = vertList[_TriTable[cubeIndex * 16 + i + 2]];
 
         tri.v0 = float3(v0_zup.x, v0_zup.z, v0_zup.y);
         tri.v1 = float3(v1_zup.x, v1_zup.z, v1_zup.y);
@@ -384,7 +384,7 @@ void MarchingCubes(uint3 id : SV_DispatchThreadID) {
         float aeration2 = GetAeration(v2_zup, r);
 
         tri.velocity = float3(aeration0, aeration1, aeration2);
-        TriangleBuffer.Append(tri);
+        _TriangleBuffer.Append(tri);
     }
 }
 
