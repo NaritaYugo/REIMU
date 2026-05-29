@@ -261,11 +261,9 @@ Assets
 ![](https://github.com/user-attachments/assets/ecd0501c-739c-4123-ab87-2166a586ceba)
 
 ## 実行方法
-1. 本リポジトリをクローンするか、ZIPでダウンロードします。
-2. Unity Hubから対象のバージョンでプロジェクトを開きます。
-3. Scenes/MainScene を開いてプレイモードを実行してください。
-4. WASDで移動、Spaceでジャンプ、右ドラッグで視点移動、左ドラッグで水面をかき混ぜることができます。
-5. パラメータの調整は、SWESeaオブジェクトと、SWEFFTマテリアルのインスペクタから行ってください。
+1. クローンまたはダウンロード後、Scenes/MainScene を開いてプレイモードを実行してください。
+2. WASDで移動、Spaceでジャンプ、右ドラッグで視点移動、左ドラッグで水面をかき混ぜることができます。
+3. パラメータの調整は、SWESeaオブジェクトと、SWEFFTマテリアルのインスペクタから行ってください。
 
 ## 性能
 
@@ -307,7 +305,7 @@ FFT: 512² (3カスケード)
 |SWE+FFT|約78ms|
 |フルFFT|約47ms|
 
-APIC単体と比べて **約90倍以上高速化** しています。
+APIC単体と比べて約90倍高速化しています。
 
 ## 技術ハイライト
 
@@ -322,9 +320,9 @@ APIC単体と比べて **約90倍以上高速化** しています。
 
 詳細な解説はこちら
 
-[前編](https://zenn.dev/quickbrush/articles/0b5c77222bf078): 全体の設計, ビジュアル面の工夫
+[前編](https://zenn.dev/quickbrush/articles/0b5c77222bf078): 全体の設計概略, ビジュアル面の工夫
 
-[後編](https://zenn.dev/quickbrush/articles/fafedf2726bf47): 流体シミュレーション**全7手法のGIF比較**, 手法の選定理由, カップリングアルゴリズム, 技術的課題と解決策
+[後編](https://zenn.dev/quickbrush/articles/fafedf2726bf47): 流体シミュレーション全7手法のGIF比較, 手法の選定理由, 性能等
 
 ## ライセンス
 
