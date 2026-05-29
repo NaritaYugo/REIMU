@@ -44,7 +44,6 @@ public class PlayerController : MonoBehaviour
         rightClickAction = new InputAction("RightClick", binding: "<Mouse>/rightButton");
     }
 
-    // Input Actionは有効化(Enable)しないと入力を受け付けません
     void OnEnable()
     {
         moveAction.Enable();

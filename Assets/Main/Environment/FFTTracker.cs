@@ -6,7 +6,6 @@ public class FFTTracker : MonoBehaviour
     public float waterHeight = 0.0f;
     
     [Header("References")]
-    [Tooltip("同じオブジェクト、またはシーン内のGridGeneratorをアタッチ")]
     public OceanGridGenerator gridGenerator;
 
     void Start()

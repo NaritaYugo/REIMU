@@ -5,9 +5,7 @@ public class OceanGridGenerator : MonoBehaviour
 {
     [Header("Clipmap Settings")]
     public Material oceanMaterial;
-    [Tooltip("LODの解像度。4の倍数を推奨")]
     public int resolution = 128; 
-    [Tooltip("LOD0（一番細かい中心部分）の全体のサイズ")]
     public float baseSize = 100.0f;
 
     void Start()

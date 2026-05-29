@@ -28,8 +28,11 @@ Shader "APICSplash"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
             struct APICParticle {
-                float3 position; float mass; float3 velocity; float age;
-                float3 c1; float pad_c1; float3 c2; float pad_c2; float3 c3; float pad_c3;
+                float3 position;    float mass;
+                float3 velocity;    float age;
+                float3 c1;          float pad_c1;
+                float3 c2;          float pad_c2;
+                float3 c3;          float pad_c3;
             };
 
             StructuredBuffer<APICParticle> APIC_Particle_Buffer;
@@ -46,14 +49,14 @@ Shader "APICSplash"
             float _SpeedThreshold;
             float _SparkleProbability;
 
-            struct v2f { 
+            struct Varyings { 
                 float4 pos : SV_POSITION; 
                 float2 uv : TEXCOORD0; 
                 float sparkle : TEXCOORD1; 
             };
 
-            v2f vert (uint vertexID : SV_VertexID) {
-                v2f o;
+            Varyings vert (uint vertexID : SV_VertexID) {
+                Varyings OUT;
                 
                 uint particleIndex = vertexID / 6;
                 uint cornerIndex = vertexID % 6;
@@ -79,10 +82,10 @@ Shader "APICSplash"
                 bool isSplash = (density < _IsoLevel * 0.8f) && (speed_particle > _SpeedThreshold);
 
                 if (p.mass <= 0.0f || !isSplash) {
-                    o.pos = float4(0.0, -99999.0, 0.0, 1.0);
-                    o.uv = float2(0.0, 0.0);
-                    o.sparkle = 0.0;
-                    return o;
+                    OUT.pos = float4(0.0, -99999.0, 0.0, 1.0);
+                    OUT.uv = float2(0.0, 0.0);
+                    OUT.sparkle = 0.0;
+                    return OUT;
                 }
 
                 float densityRatio = saturate(density / max(_IsoLevel * 0.8f, 0.001f));
@@ -98,14 +101,16 @@ Shader "APICSplash"
                     float blink = sin(_Time.y * blinkSpeed + phase);
                     sparkleAmount = smoothstep(0.95f, 1.0f, blink); 
                 }
-                o.sparkle = sparkleAmount;
+                OUT.sparkle = sparkleAmount;
 
+                // ひし形の頂点
                 float2 uvArray[6] = {
                     float2(-1, -1), float2( 1, -1), float2(-1,  1), 
                     float2(-1,  1), float2( 1, -1), float2(  1,  1)  
                 };
+
                 float2 uv = uvArray[cornerIndex];
-                o.uv = uv;
+                OUT.uv = uv;
 
                 float3 viewPos = TransformWorldToView(unityPos);
                 float3 viewVel = mul((float3x3)UNITY_MATRIX_V, unityVel);
@@ -114,16 +119,16 @@ Shader "APICSplash"
                 float2 dirY = (speed_view > 0.001f) ? (viewVel.xy / speed_view) : float2(0.0, 1.0);
                 float2 dirX = float2(-dirY.y, dirY.x);
                 
+                // 速度に応じて引き延ばす
                 float stretch = 1.0f + speed_view * _StretchMultiplier;
                 float2 offset = (dirX * uv.x + dirY * uv.y * stretch) * halfSize;
                 viewPos.xy += offset;
 
-                o.pos = mul(UNITY_MATRIX_P, float4(viewPos, 1.0));
-                return o;
+                OUT.pos = mul(UNITY_MATRIX_P, float4(viewPos, 1.0));
+                return OUT;
             }
 
-            float4 frag (v2f i) : SV_Target
-            {
+            float4 frag (Varyings i) : SV_Target {
                 float shape = abs(i.uv.x) + abs(i.uv.y);
                 if (shape > 1.0f) discard;
 

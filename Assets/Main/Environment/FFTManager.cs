@@ -7,25 +7,16 @@ using UnityEngine;
 public class FFTManager : MonoBehaviour
 {
     [Header("FFT Settings")]
-    [Tooltip("FFTテクスチャの解像度。2の累乗(256, 512など)である必要がある")]
     public int resolution = 256;
-    [Tooltip("生成するカスケード(LOD)の数")]
     public int lodCount = 3;
-    [Tooltip("各LODがカバーする海域の物理的な広さ(m)")]
     public float[] domainSizes = new float[] { 20.0f, 80.0f, 320.0f }; 
     
     [Header("JONSWAP Parameters")]
-    [Tooltip("風速 (m/s)。波の高さと長さに影響する")]
     public float windSpeed = 12.0f;
-    [Tooltip("風の向き (度数法)")]
     public float windDirection = 0.0f;
-    [Tooltip("吹送距離 (Fetch)。風が海面を吹き抜けた距離。波の成長限界を決める")]
     public float fetch = 100000.0f;
-    [Range(1f, 10f), Tooltip("スペクトルのピーク強調度。波がどれくらい揃うか")]
     public float peakEnhancement = 3.3f;
-    [Range(0f, 10f), Tooltip("波の広がり具合。風向きに対してどれだけ横波が混じるか")]
     public float spreadStrength = 2.0f;
-    [Tooltip("各LODの波の高さの係数")]
     public float[] lodAmplitudes = new float[] { 0.5f, 1.0f, 1.0f };
 
     [Header("Compute Shader")]
@@ -52,8 +43,8 @@ public class FFTManager : MonoBehaviour
         
         CacheKernels();
         InitializeTextures();
-        CreateButterflyTexture(); // GPUでのFFT計算を高速化するための事前計算
-        GenerateInitialSpectrum(); // JONSWAPモデルに基づく初期波面を生成
+        CreateButterflyTexture();
+        GenerateInitialSpectrum();
     }
 
     private void CacheKernels()
@@ -73,7 +64,6 @@ public class FFTManager : MonoBehaviour
             RunIFFT(i);
         }
 
-        // 描画用のマテリアルに計算結果を渡す
         if (fftOceanMaterial != null)
         {
             fftOceanMaterial.SetTexture("FFT_DispLOD0", displacementMaps[0]);
@@ -120,9 +110,7 @@ public class FFTManager : MonoBehaviour
         return rt;
     }
 
-    // =========================================================
     // バタフライ演算用テクスチャの生成
-    // =========================================================
     void CreateButterflyTexture()
     {
         butterflyTexture = new Texture2D(stages, resolution, TextureFormat.RGBAFloat, false, true);

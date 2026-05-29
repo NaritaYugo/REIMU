@@ -6,23 +6,17 @@
 
 #define PI 3.14159265359
 
-// ==========================================
-// 共通の変数
-// ==========================================
 uint N;
 float Length;
 float Gravity;
 float Time;
 
-// ==========================================
-// 数学・複素数ユーティリティ
-// ==========================================
 float2 MultiplyComplex(float2 a, float2 b) {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
 // ==========================================
-// 1. JONSWAP 初期スペクトル生成
+// JONSWAP 初期スペクトル生成
 // ==========================================
 RWTexture2D<float4> H0_Texture;
 float WindSpeed;
@@ -104,9 +98,9 @@ void InitJonswap(uint3 id : SV_DispatchThreadID) {
 }
 
 // ==========================================
-// 2. 時間発展 (Time Evolution)
+// 時間発展 (Time Evolution)
 // ==========================================
-Texture2D<float4> H0_Tex_Read; // H0_Textureは上がRWなのでエイリアスとして使うか直接H0_Textureを読む
+Texture2D<float4> H0_Tex_Read;
 RWTexture2D<float2> OutH_Spectrum;
 RWTexture2D<float2> OutDx_Spectrum;
 RWTexture2D<float2> OutDz_Spectrum;
@@ -153,7 +147,7 @@ void UpdateTimeSpectrum(uint3 id : SV_DispatchThreadID) {
 }
 
 // ==========================================
-// 3. IFFT (バタフライ演算)
+// IFFT
 // ==========================================
 Texture2D<float4> ButterflyTex;
 uint Stage; 

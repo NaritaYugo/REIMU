@@ -1,9 +1,6 @@
 #ifndef SWE_FFT_FUNCTIONS_INCLUDED
 #define SWE_FFT_FUNCTIONS_INCLUDED
 
-// ==========================================================
-// 共通のテクスチャ・バッファ宣言
-// ==========================================================
 Texture2D<float4> FFT_DispLOD0; SamplerState samplerFFT_DispLOD0;
 Texture2D<float4> FFT_DispLOD1; SamplerState samplerFFT_DispLOD1;
 Texture2D<float4> FFT_DispLOD2; SamplerState samplerFFT_DispLOD2;
@@ -42,15 +39,14 @@ void GetCausticsUVAndMask_float(
     out float2 OutCausticsUV, 
     out float OutIntensityMask 
 ) {
-    // 波打ち際の不自然な切れ目を消すマスクは残す
+    // 波打ち際の切れ目を消す
     float shoreMask = smoothstep(0.0, 0.2, TrueWaterDepth);
 
-    // 深度によるフェードアウトは水全体の濁度（透過率）に任せるため、ここでは計算しない
+    // 深度によるフェードアウトは水全体の濁度に任せるため、ここでは計算しない
     OutIntensityMask = shoreMask;
 
     float2 baseUV = SeabedWorldPos.xz;
     
-    // 深いほど光が拡散して歪みが大きくなる表現はそのまま活かす
     float2 distortion = WaterSurfaceNormal.xz * TrueWaterDepth * DistortionStrength;
     
     OutCausticsUV = baseUV + distortion;
@@ -166,7 +162,7 @@ void GetUnifiedOcean_float(
     float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
     out float3 OutPosition)
 {
-    // 1. FFT領域(背景)の波高を計算
+    // FFT領域の波高
     float3 fftDisp = float3(0.0f, 0.0f, 0.0f);
     GetFFTDisplacement_float(WorldPos, Size0, Size1, Size2, fftDisp);
     
@@ -191,7 +187,6 @@ void GetUnifiedOcean_float(
     float blendZ = smoothstep(0.0f, blendMargin, localZ) * smoothstep(0.0f, blendMargin, sweTotalSize - localZ);
     float blendWeight = blendX * blendZ;
 
-    // SWE領域内であれば、FFTの波とSWEの波をブレンドする
     if (blendWeight > 0.0f) 
     {
         float absoluteSweHeight = terrain_y + sweDepth;
@@ -200,8 +195,6 @@ void GetUnifiedOcean_float(
         float sink_offset = smoothstep(0.01f, 0.00f, sweDepth) * 0.05f;
         absoluteSweHeight -= sink_offset;
 
-        // SWEの波に、FFTの細かいディティールを上乗せする
-        // 陸地(terrain_y > 0)や極端な浅瀬ではFFTの波を消す
         float altitude_fade = 1.0f - smoothstep(0.0f, 1.0f, terrain_y);
         float fft_blend = smoothstep(0.01f, 0.1f, sweDepth) * altitude_fade;
         absoluteSweHeight += fftDisp.y * fft_blend;
@@ -223,8 +216,7 @@ void GetUnifiedFoam_float(
     float swe_width_In, float dx_swe_In, float2 swe_world_offset_In, 
     out float OutFoam)
 {
-    // --- 1. FFT領域の砕波 ---
-    // 変位ベクトルの空間微分(ヤコビアン)を用いて、波が急峻になり折り重なる箇所を「泡」とする
+    // FFT領域の泡
     float delta = 0.5f;
     float3 dispX = float3(0.0f, 0.0f, 0.0f);
     float3 dispZ = float3(0.0f, 0.0f, 0.0f);
@@ -239,8 +231,7 @@ void GetUnifiedFoam_float(
     float jacobian = dDx + dDz; 
     float fft_foam = smoothstep(-0.3f, -0.8f, jacobian); 
 
-    // --- 2. SWE領域の泡 ---
-    // (SWEバッファからの泡サンプリングとブレンド処理省略)
+    // SWE領域の泡
     float localX = WorldPos.x - swe_world_offset_In.x;
     float localZ = WorldPos.z - swe_world_offset_In.y;
     float sweTotalSize = swe_width_In * dx_swe_In;
@@ -290,8 +281,7 @@ void GetUnifiedFoam_float(
 
     float base_foam = saturate(fft_foam + (swe_foam * blendWeight));
 
-    // --- 3. 陸地との交差部分（波打ち際）の泡 ---
-    // 水深が浅い箇所を波打ち際とみなし、泡を強制的に発生させる
+    // 陸地との交差部分(波打ち際)に泡を発生させる
     float actual_wave_y = WorldPos.y + dispCenter.y; 
     
     if (blendWeight > 0.0f)
@@ -330,10 +320,8 @@ void GetUnifiedFoam_float(
 
 void GetPanoramicUV_float(float3 ReflectionDir, out float2 PanoramicUV)
 {
-    // ベクトルを正規化
     float3 dir = normalize(ReflectionDir);
     
-    // Atan2とAsinを使って、3D方向を2DのUV（0.0～1.0）にマッピング
     float u = atan2(dir.x, dir.z) / (2.0 * 3.1415926535) + 0.5;
     float v = asin(dir.y) / 3.1415926535 + 0.5;
     
